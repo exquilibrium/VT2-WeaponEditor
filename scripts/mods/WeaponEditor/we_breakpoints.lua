@@ -25,6 +25,7 @@ local breakpoints = {
 -- net for anything that signature doesn't capture
 local REFRESH_INTERVAL = 5
 local MAX_HIT_LOG = 25
+local COMBO_SETTING_WIDTH = 70 -- hit zone / stagger dropdowns of each combo step
 local BETTER_COLOR = { 120, 230, 120, 255 }
 local WORSE_COLOR = { 255, 110, 90, 255 }
 local INFO_COLOR = { 150, 200, 255, 255 }
@@ -359,11 +360,12 @@ local function default_options()
 	}
 end
 
-local function compute_grid(editor, options)
-	local target_keys = editor.breakpoint_target
+-- Everything about the attacker and the chosen options that every cell shares, or nil without
+-- a player unit
+local function grid_context(options)
 	local unit = breakpoints.local_player_unit()
 
-	if not (target_keys and unit) then
+	if not unit then
 		return nil
 	end
 
@@ -377,90 +379,128 @@ local function compute_grid(editor, options)
 
 	local inventory_extension = ScriptUnit.extension(unit, "inventory_system")
 	local slot_data = inventory_extension:get_slot_data(inventory_extension:get_wielded_slot_name())
-	local damage_source = slot_data and slot_data.item_data and slot_data.item_data.name or "default"
-	local difficulty_level = Difficulties[options.difficulty_index]
-	local hit_zone_name = HIT_ZONES[options.hit_zone_index]
-	local stagger_number = options.stagger_index - 1
-	local target_count = options.target_count_index
-	local grid = {
+
+	return {
+		unit = unit,
 		power_level = power_level,
-		difficulty_level = difficulty_level,
+		damage_source = slot_data and slot_data.item_data and slot_data.item_data.name or "default",
+		difficulty_level = Difficulties[options.difficulty_index],
+		hit_zone_name = HIT_ZONES[options.hit_zone_index],
+		stagger_number = options.stagger_index - 1,
+		critical = options.critical,
+		target_count = options.target_count_index,
+		categories = options.categories,
+	}
+end
+
+-- Columns whose profile is identical to an earlier column's reuse its numbers instead of
+-- recomputing: baseline = now when nothing in that profile is edited, vanilla = baseline
+-- when the balance mod left the profile alone
+local function column_reuse(editor, hand)
+	local same_as = {}
+	local now_path = "DamageProfileTemplates." .. tostring(hand.names.now)
+	local now_edited = false
+
+	for edit_path in pairs(editor.state.edits) do
+		if core.path_is_under(edit_path, now_path) then
+			now_edited = true
+
+			break
+		end
+	end
+
+	if hand.profiles.baseline and hand.names.baseline == hand.names.now and not now_edited then
+		same_as.baseline = "now"
+	end
+
+	if hand.profiles.vanilla and hand.profiles.baseline and core.deep_equal(hand.profiles.vanilla, hand.profiles.baseline) then
+		same_as.vanilla = "baseline"
+	end
+
+	return same_as
+end
+
+-- Damage one hand of an attack deals to a breed's target_index, per column (nil where the
+-- column has no profile or the prediction failed)
+local function hand_damages(ctx, hand, breed, target_index)
+	local damages = {}
+
+	for _, variant in ipairs(VARIANTS) do
+		local profile = hand.profiles[variant]
+
+		if hand.same_as[variant] then
+			damages[variant] = damages[hand.same_as[variant]]
+		elseif profile then
+			-- Target 1 is the swing's first hit (first_melee_hit_damage buffs)
+			local ok, damage = pcall(breakpoints.predict, ctx.unit, ctx.damage_source, ctx.power_level, profile, target_index, ctx.critical, breed, ctx.hit_zone_name, ctx.difficulty_level, 0, 1, ctx.stagger_number, target_index == 1)
+
+			if ok and damage then
+				damages[variant] = damage
+			end
+		end
+	end
+
+	return damages
+end
+
+-- The grid's rows: shown breeds grouped under category headers, each with one cell per
+-- target from cell_for(breed, health, target_index)
+local function build_rows(ctx, cell_for)
+	local rows = {}
+	local current_category = nil
+
+	for _, entry in ipairs(breakpoints.BREEDS) do
+		local breed = Breeds[entry[1]]
+		local category = entry[3]
+
+		if breed and ctx.categories[category] then
+			if category ~= current_category then
+				current_category = category
+				rows[#rows + 1] = {
+					header = category,
+				}
+			end
+
+			local health = breakpoints.breed_health(breed, ctx.difficulty_level)
+			local cells = {}
+
+			for target_index = 1, ctx.target_count do
+				cells[target_index] = cell_for(breed, health, target_index)
+			end
+
+			rows[#rows + 1] = {
+				label = entry[2],
+				health = health,
+				cells = cells,
+			}
+		end
+	end
+
+	return rows
+end
+
+local function compute_attack_grid(editor, ctx)
+	local grid = {
+		power_level = ctx.power_level,
+		difficulty_level = ctx.difficulty_level,
 		hands = {},
 	}
 
-	for _, hand in ipairs(resolve_profiles(editor, target_keys)) do
-		local rows = {}
-		local current_category = nil
+	for _, hand in ipairs(resolve_profiles(editor, editor.breakpoint_target)) do
+		hand.same_as = column_reuse(editor, hand)
 
-		-- Columns whose profile is identical to an earlier column's reuse its numbers instead of
-		-- recomputing: baseline = now when nothing in that profile is edited, vanilla = baseline
-		-- when the balance mod left the profile alone
-		local same_as = {}
-		local now_path = "DamageProfileTemplates." .. tostring(hand.names.now)
-		local now_edited = false
+		local rows = build_rows(ctx, function (breed, health, target_index)
+			local cell = {}
 
-		for edit_path in pairs(editor.state.edits) do
-			if core.path_is_under(edit_path, now_path) then
-				now_edited = true
-
-				break
-			end
-		end
-
-		if hand.profiles.baseline and hand.names.baseline == hand.names.now and not now_edited then
-			same_as.baseline = "now"
-		end
-
-		if hand.profiles.vanilla and hand.profiles.baseline and core.deep_equal(hand.profiles.vanilla, hand.profiles.baseline) then
-			same_as.vanilla = "baseline"
-		end
-
-		for _, entry in ipairs(breakpoints.BREEDS) do
-			local breed = Breeds[entry[1]]
-			local category = entry[3]
-
-			if breed and options.categories[category] then
-				if category ~= current_category then
-					current_category = category
-					rows[#rows + 1] = {
-						header = category,
-					}
-				end
-
-				local health = breakpoints.breed_health(breed, difficulty_level)
-				local cells = {}
-
-				for target_index = 1, target_count do
-					local cell = {}
-
-					for _, variant in ipairs(VARIANTS) do
-						local profile = hand.profiles[variant]
-
-						if same_as[variant] then
-							cell[variant] = cell[same_as[variant]]
-						elseif profile then
-							-- Target 1 is the swing's first hit (first_melee_hit_damage buffs)
-							local ok, damage = pcall(breakpoints.predict, unit, damage_source, power_level, profile, target_index, options.critical, breed, hit_zone_name, difficulty_level, 0, 1, stagger_number, target_index == 1)
-
-							if ok and damage then
-								cell[variant] = {
-									damage = damage,
-									hits = breakpoints.hits_to_kill(health, damage),
-								}
-							end
-						end
-					end
-
-					cells[target_index] = cell
-				end
-
-				rows[#rows + 1] = {
-					label = entry[2],
-					health = health,
-					cells = cells,
+			for variant, damage in pairs(hand_damages(ctx, hand, breed, target_index)) do
+				cell[variant] = {
+					damage = damage,
+					hits = breakpoints.hits_to_kill(health, damage),
 				}
 			end
-		end
+
+			return cell
+		end)
 
 		grid.hands[#grid.hands + 1] = {
 			hand = hand,
@@ -469,6 +509,160 @@ local function compute_grid(editor, options)
 	end
 
 	return grid
+end
+
+--[[
+	Combos: a list of attacks repeated in order until the enemy dies. step_hits[i] holds the
+	damage of each hand of attack i - every hand's hit is its own damage event, so each is
+	rounded on its own, like hits_to_kill does. Returns the number of attacks needed.
+]]
+function breakpoints.combo_hits_to_kill(health, step_hits)
+	local step_totals = {}
+	local pass_damage = 0
+
+	for i, hits in ipairs(step_hits) do
+		local step_total = 0
+
+		for _, damage in ipairs(hits) do
+			step_total = step_total + DamageUtils.networkify_damage(damage)
+		end
+
+		step_totals[i] = step_total
+		pass_damage = pass_damage + step_total
+	end
+
+	if pass_damage <= 0 then
+		return nil
+	end
+
+	-- Skip the whole passes that can't kill yet; the kill then lands within the next two
+	local skipped_passes = math.max(0, math.floor(health / pass_damage) - 1)
+	local total = skipped_passes * pass_damage
+	local attacks = skipped_passes * #step_totals
+
+	for _ = 1, 2 do
+		for _, step_total in ipairs(step_totals) do
+			attacks = attacks + 1
+			total = total + step_total
+
+			if total >= health then
+				return attacks
+			end
+		end
+	end
+
+	return nil
+end
+
+local function compute_combo_grid(editor, ctx)
+	local steps = {}
+
+	for i, entry in ipairs(editor.breakpoint_combo) do
+		local hands = resolve_profiles(editor, entry.keys)
+
+		for _, hand in ipairs(hands) do
+			hand.same_as = column_reuse(editor, hand)
+		end
+
+		steps[i] = {
+			keys = entry.keys,
+			hands = hands,
+			-- The step's own hit zone, stagger and crit over the shared context
+			ctx = setmetatable({
+				hit_zone_name = HIT_ZONES[entry.hit_zone_index],
+				stagger_number = entry.stagger_index - 1,
+				critical = entry.critical,
+			}, { __index = ctx }),
+		}
+	end
+
+	local rows = build_rows(ctx, function (breed, health, target_index)
+		-- variant -> per step, the damage of each of its hands
+		local step_hits = {}
+
+		for _, variant in ipairs(VARIANTS) do
+			step_hits[variant] = {}
+		end
+
+		for i, step in ipairs(steps) do
+			for _, variant in ipairs(VARIANTS) do
+				step_hits[variant][i] = {}
+			end
+
+			for _, hand in ipairs(step.hands) do
+				local damages = hand_damages(step.ctx, hand, breed, target_index)
+
+				for _, variant in ipairs(VARIANTS) do
+					local hits = step_hits[variant][i]
+
+					hits[#hits + 1] = damages[variant] or false
+				end
+			end
+		end
+
+		local cell = {}
+
+		for _, variant in ipairs(VARIANTS) do
+			-- A column missing any hit (no profile in that version of the data) leaves the
+			-- whole combo out rather than showing a partial one
+			local complete = #steps > 0
+			local pass_damage = 0
+
+			for i = 1, #steps do
+				local hits = step_hits[variant][i]
+
+				if #hits == 0 then
+					complete = false
+				end
+
+				for _, damage in ipairs(hits) do
+					if damage then
+						pass_damage = pass_damage + damage
+					else
+						complete = false
+					end
+				end
+			end
+
+			if complete then
+				cell[variant] = {
+					damage = pass_damage,
+					hits = breakpoints.combo_hits_to_kill(health, step_hits[variant]),
+				}
+			end
+		end
+
+		return cell
+	end)
+
+	return {
+		power_level = ctx.power_level,
+		difficulty_level = ctx.difficulty_level,
+		combo_steps = steps,
+		hands = {
+			{
+				rows = rows,
+			},
+		},
+	}
+end
+
+local function showing_combo(editor)
+	return editor.breakpoint_show_combo and #editor.breakpoint_combo > 0
+end
+
+local function compute_grid(editor, options)
+	local ctx = grid_context(options)
+
+	if not ctx then
+		return nil
+	end
+
+	if showing_combo(editor) then
+		return compute_combo_grid(editor, ctx)
+	end
+
+	return editor.breakpoint_target and compute_attack_grid(editor, ctx) or nil
 end
 
 --[[
@@ -695,11 +889,20 @@ local function options_key(editor, options)
 		shown_categories[#shown_categories + 1] = options.categories[category] and category or "-"
 	end
 
+	local combo_paths = {}
+
+	if showing_combo(editor) then
+		for i, entry in ipairs(editor.breakpoint_combo) do
+			combo_paths[i] = string.format("%s:%d:%d:%s", core.format_path(entry.keys), entry.hit_zone_index, entry.stagger_index, tostring(entry.critical))
+		end
+	end
+
 	return table.concat({
 		attacker_signature(),
 		table.concat(shown_categories, ","),
 		tostring(editor.edit_generation),
 		editor.breakpoint_target and core.format_path(editor.breakpoint_target) or "none",
+		table.concat(combo_paths, ">"),
 		tostring(options.use_own_power),
 		tostring(options.power_level),
 		tostring(options.difficulty_index),
@@ -710,10 +913,38 @@ local function options_key(editor, options)
 	}, "|")
 end
 
+-- One hand's profile name (with the weapon mode it applies in), plus the baseline and vanilla
+-- names when they differ
+local function draw_hand_profiles(hand, prefix)
+	local label = breakpoints.editor.baseline_label()
+
+	Imgui.text(string.format("%s%s%s", prefix, hand.names.now, hand.weapon_mode and string.format(" (%s mode)", tostring(hand.weapon_mode)) or ""))
+
+	if hand.names.baseline ~= hand.names.now or hand.names.vanilla ~= hand.names.now then
+		text_colored(string.format("    %s profile %s, vanilla profile %s", label, tostring(hand.names.baseline or "-"), tostring(hand.names.vanilla or "-")), INFO_COLOR)
+	end
+end
+
+-- A combo step's attack: action.sub_action, with the weapon in front when it's not the first
+-- step's weapon
+local function combo_step_label(combo, keys)
+	local label = core.format_relative(keys, 4)
+
+	if combo[1] and keys[2] ~= combo[1].keys[2] then
+		label = tostring(keys[2]) .. "." .. label
+	end
+
+	return label
+end
+
 local function draw_grid(grid, options)
 	local label = breakpoints.editor.baseline_label()
 
 	text_colored(string.format("power %d, %s - cells: now | %s | vanilla (green/red: now vs %s)", grid.power_level, grid.difficulty_level, label, label), INFO_COLOR)
+
+	if grid.combo_steps then
+		text_colored(string.format("combo of %d attacks, repeated in order - hits: attacks to kill, damage: one pass of the combo. Hit zone, stagger and crit are set per attack in the combo list.", #grid.combo_steps), INFO_COLOR)
+	end
 
 	local target_count = options.target_count_index
 
@@ -721,10 +952,9 @@ local function draw_grid(grid, options)
 		local hand = hand_grid.hand
 
 		Imgui.separator()
-		Imgui.text(string.format("%s%s%s", #grid.hands > 1 and (hand.label .. ": ") or "", hand.names.now, hand.weapon_mode and string.format(" (%s mode)", tostring(hand.weapon_mode)) or ""))
 
-		if hand.names.baseline ~= hand.names.now or hand.names.vanilla ~= hand.names.now then
-			text_colored(string.format("%s profile %s, vanilla profile %s", label, tostring(hand.names.baseline or "-"), tostring(hand.names.vanilla or "-")), INFO_COLOR)
+		if hand then
+			draw_hand_profiles(hand, #grid.hands > 1 and (hand.label .. ": ") or "")
 		end
 
 		Imgui.columns(target_count + 2, true)
@@ -807,6 +1037,91 @@ local function draw_hit_log()
 	end
 end
 
+-- Combo steps with move up / remove buttons. Structural changes apply after the loop so the
+-- list isn't modified while it's being drawn.
+local function draw_combo(editor, grid)
+	local combo = editor.breakpoint_combo
+
+	editor.breakpoint_show_combo = Imgui.checkbox("show combo instead of the attack##bp_show_combo", editor.breakpoint_show_combo)
+
+	if editor.breakpoint_target then
+		Imgui.same_line()
+
+		if Imgui.small_button("add attack##bp_combo_add") then
+			editor.add_to_combo(editor.breakpoint_target)
+		end
+	end
+
+	if #combo == 0 then
+		Imgui.text("Empty - add attacks with \"+ combo\" in the editor or \"add attack\" here.")
+
+		return
+	end
+
+	Imgui.same_line()
+
+	if Imgui.small_button("clear##bp_combo_clear") then
+		editor.breakpoint_combo = {}
+
+		return
+	end
+
+	local move_up, remove = nil, nil
+	-- Profile names come from the computed grid, when it's the combo's
+	local steps = grid and grid.combo_steps
+
+	for i, entry in ipairs(combo) do
+		if i > 1 and Imgui.small_button("^##bp_combo_up" .. i) then
+			move_up = i
+		end
+
+		if i > 1 then
+			Imgui.same_line()
+		end
+
+		if Imgui.small_button("x##bp_combo_remove" .. i) then
+			remove = i
+		end
+
+		Imgui.same_line()
+		Imgui.text(string.format("%d. %s", i, combo_step_label(combo, entry.keys)))
+
+		-- The step's own hit zone, stagger stacks and crit
+		Imgui.text("   ")
+		Imgui.same_line()
+		Imgui.push_item_width(COMBO_SETTING_WIDTH)
+
+		entry.hit_zone_index = Imgui.combo("##bp_combo_zone" .. i, entry.hit_zone_index, HIT_ZONES)
+
+		Imgui.same_line()
+
+		entry.stagger_index = Imgui.combo("stagger##bp_combo_stagger" .. i, entry.stagger_index, STAGGER_LEVELS)
+
+		Imgui.pop_item_width()
+		Imgui.same_line()
+
+		entry.critical = Imgui.checkbox("crit##bp_combo_crit" .. i, entry.critical)
+
+		local step = steps and steps[i]
+
+		if step then
+			if #step.hands == 0 then
+				text_colored("    no damage profile", WORSE_COLOR)
+			end
+
+			for _, hand in ipairs(step.hands) do
+				draw_hand_profiles(hand, #step.hands > 1 and ("    " .. hand.label .. ": ") or "    ")
+			end
+		end
+	end
+
+	if move_up then
+		combo[move_up], combo[move_up - 1] = combo[move_up - 1], combo[move_up]
+	elseif remove then
+		table.remove(combo, remove)
+	end
+end
+
 local function draw_body(editor, t)
 	local s = editor.ui_state
 
@@ -825,14 +1140,19 @@ local function draw_body(editor, t)
 	end
 
 	local key = options_key(editor, options)
+	local has_subject = editor.breakpoint_target or showing_combo(editor)
 
-	if editor.breakpoint_target and (key ~= s.breakpoint_key or t - (s.breakpoint_time or -math.huge) > REFRESH_INTERVAL) then
+	if has_subject and (key ~= s.breakpoint_key or t - (s.breakpoint_time or -math.huge) > REFRESH_INTERVAL) then
 		s.breakpoint_grid = compute_grid(editor, options)
 		s.breakpoint_key = key
 		s.breakpoint_time = t
 	end
 
-	local grid = editor.breakpoint_target and s.breakpoint_grid
+	local grid = has_subject and s.breakpoint_grid or nil
+
+	if Imgui.collapsing_header(string.format("combo (%d attacks)##bp_combo", #editor.breakpoint_combo), #editor.breakpoint_combo > 0) then
+		draw_combo(editor, grid)
+	end
 
 	if grid then
 		if #grid.hands == 0 then
@@ -840,7 +1160,7 @@ local function draw_body(editor, t)
 		else
 			draw_grid(grid, options)
 		end
-	elseif editor.breakpoint_target then
+	elseif has_subject then
 		Imgui.text("Needs a player unit - open this in the keep or a level.")
 	end
 

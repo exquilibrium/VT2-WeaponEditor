@@ -29,6 +29,8 @@ local mod = get_mod("WeaponEditor")
 		                     attack (or all attacks of the weapon using it) at it - exports as a new block
 		breakpoints          button on any attack (or /we_breakpoints): hits-to-kill grid comparing
 		                     now / balance mod / vanilla, plus a hit log checking predictions against real hits
+		+ combo              button next to it: adds the attack to a combo the grid can show instead
+		                     (attacks of the combo, repeated in order, needed to kill)
 		/we_export            copies the export to the clipboard (and the console log)
 		paste, rebuild, restart
 		                     on launch, edits that are now in the files are dropped automatically,
@@ -216,6 +218,10 @@ editor = {
 	edit_generation = 0,
 	breakpoints_open = false,
 	breakpoint_target = nil, -- keys of the sub-action shown in the breakpoint window
+	-- Breakpoint combo steps in order: { keys = sub-action keys, hit_zone_index, stagger_index,
+	-- critical } (indices into the breakpoint window's option lists)
+	breakpoint_combo = {},
+	breakpoint_show_combo = false, -- the breakpoint window shows the combo instead of the attack
 	-- template name -> true when an edited field only takes effect after a re-equip
 	reequip_needed = {},
 	-- window name ("editor"/"breakpoints") -> true: move it back on screen the next time it's drawn
@@ -1459,6 +1465,23 @@ end
 -- keys: path of a sub-action, e.g. { "Weapons", template, "actions", action, sub_action }
 function editor.show_breakpoints(keys)
 	editor.breakpoint_target = keys
+	editor.breakpoint_show_combo = false
+	editor.breakpoints_open = true
+end
+
+-- Appends an attack to the breakpoint combo and shows the combo. The step's hit zone, stagger
+-- stacks and crit start from the breakpoint window's current options.
+function editor.add_to_combo(keys)
+	local combo = editor.breakpoint_combo
+	local options = editor.ui_state.breakpoint_options
+
+	combo[#combo + 1] = {
+		keys = keys,
+		hit_zone_index = options and options.hit_zone_index or 1,
+		stagger_index = options and options.stagger_index or 1,
+		critical = options and options.critical or false,
+	}
+	editor.breakpoint_show_combo = true
 	editor.breakpoints_open = true
 end
 

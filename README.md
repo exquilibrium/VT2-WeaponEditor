@@ -191,6 +191,15 @@ first attack). The grid shows, per breed and target index:
   The grid recomputes whenever your buffs, power level, weapon, the options or an edit change.
   Conditional buffs only show while active - e.g. Heroism's charged-heavy bonus appears while
   you hold a charged heavy.
+- Attacks with `weapon_mode_overrides` (the Bright Wizard scythe) use the profile of the mode
+  the weapon starts in (its template's `custom_data`), shown next to the profile name.
+- **Combos**: **+ combo** next to **breakpoints** (or **add attack** in the window's combo
+  section) appends an attack. The grid then shows the combo repeated in order: hits = attacks
+  needed to kill, damage = one pass of the combo. Each step has its own hit zone (torso/head),
+  stagger stacks and crit, starting from the options when it's added; the other options
+  (power, difficulty, targets, categories) apply to the whole combo. Steps can be moved up or
+  removed; "show combo instead of the attack" switches back and forth. A dual-wield attack's
+  hands each count as a hit within that attack.
 - **hit log**: tick "record hits" to log real hits (damage dealt, stagger multiplier, damage
   buff multiplier, hits to kill). Each hit is checked twice: the damage formula, and the damage
   buff step that runs after it (`apply_buffs_to_damage`). Either disagreeing is flagged in red.

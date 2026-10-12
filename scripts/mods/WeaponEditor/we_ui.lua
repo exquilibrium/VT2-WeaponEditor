@@ -1289,8 +1289,16 @@ local function draw_template(editor, template_name)
 						end
 
 						if Imgui.tree_node(label .. "##" .. sub_path) then
-							if #profiles > 0 and Imgui.small_button("breakpoints##bp" .. sub_path) then
-								editor.show_breakpoints(sub_keys)
+							if #profiles > 0 then
+								if Imgui.small_button("breakpoints##bp" .. sub_path) then
+									editor.show_breakpoints(sub_keys)
+								end
+
+								Imgui.same_line()
+
+								if Imgui.small_button("+ combo##bp_combo" .. sub_path) then
+									editor.add_to_combo(sub_keys)
+								end
 							end
 
 							local others = editor.weapon_sharing(sub_action, template_name)
