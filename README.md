@@ -182,10 +182,22 @@ first attack). The grid shows, per breed and target index:
   only from the weapon data.
 - Green = your edit beats the MB value, red = worse.
 - Options: your power level or a typed one, difficulty, hit zone (torso/head), crit, stagger
-  stacks (by the registered stagger rule, or the game's: ranged counts as at least 1),
+  stacks (by the registered stagger rule, or the game's: at most 2 count, ranged counts as at least 1),
   1-5 targets, hits-to-kill or raw damage, and which categories to show: **Trash, Elite,
   Specials, Other, Boss, Lords** (taken from the categories used in `breakpoints.BREEDS`, so a
   new category there gets its own checkbox automatically).
+- **Simulated buffs** (so you don't need a crafted trinket or a teammate):
+  - **extra power %** (both sheets): works like a power buff, added to the ones you have
+    (+10 next to Comrades in Arms' +10% gives +20%).
+  - **extra damage %** (damage sheet): multiplies the result like a debuff on the enemy
+    (Exploit Weakness, Bulwark's 10% debuff), separately from your own damage buffs. Bulwark's
+    stagger mark (+1 stagger count) is separate: add it with stagger stacks.
+  - **witch hunt (tagged)** (damage sheet): the tag's damage-taken debuff (+20%), times
+    Templar's Knowledge's +5% when you have the talent. TB's extra +25% Templar's Knowledge
+    bonus sits inside its damage formula and needs a real target, so add it with extra damage %.
+  - **extra stagger power %** (stagger sheet): works like Staggering Force / Bulwark,
+    added to the ones you have.
+  - The active ones are listed in green above the grid.
 - Cells include your **damage buffs**: talents and properties like Grail Knight's
   first-target perk (target 1 counts as the first hit), melee/2h power-ups and `damage_dealt`.
   The grid recomputes whenever your buffs, power level, weapon, the options or an edit change.
@@ -200,6 +212,26 @@ first attack). The grid shows, per breed and target index:
   (power, difficulty, targets, categories) apply to the whole combo. Steps can be moved up or
   removed; "show combo instead of the attack" switches back and forth. A dual-wield attack's
   hands each count as a hit within that attack.
+- **Stagger sheet**: the **sheet** dropdown at the top switches the grid to the stagger each
+  hit causes, by the game's own stagger calculation (balance mods change stagger only through
+  weapon data and buffs, which it reads live, so nothing needs registering):
+  - Cells show the tier (`-` none, `W` weak, `M` medium, `H` heavy, `X` explosion, `P` pull)
+    and how much of the next tier's threshold the hit reaches: `M 82%` is a medium stagger at
+    82% of what heavy needs. "show: strength" gives the raw stagger strength instead. The
+    **thresholds** column lists where weak / medium / heavy start for each breed (a push on
+    an unstaggered enemy needs double for heavy; the cells account for that).
+  - Green/red: a higher/lower tier than the MB value, then more/less strength.
+  - **stagger stacks** are the enemy's stacks before the hit; each adds to the hit's stagger
+    strength (up to double), so a 3rd still counts on breeds with a low per-stack bonus.
+  - **opportunist (enemy attacking)**: the enemy is mid-attack and you have Opportunist. The
+    trait only works against attacking enemies; without it equipped, the sheet adds its bonus.
+  - With a combo, the stagger sheet has one column per attack (each on target 1), and each step
+    gets its own **opportunist** checkbox.
+  - The enemy's stacks and attack come from a stand-in for its state, which needs the game's
+    `do_stagger_calculation` via `debug.getupvalue`. If that lookup fails, a red line says so
+    and the sheet ignores stacks and Opportunist.
+  - Not modelled: enemies ignoring staggers during specific attacks (Chaos Warrior overheads
+    etc.), boss stagger immunity, repeat-heavy immunity, shield blocks, buffs on the target.
 - **hit log**: tick "record hits" to log real hits (damage dealt, stagger multiplier, damage
   buff multiplier, hits to kill). Each hit is checked twice: the damage formula, and the damage
   buff step that runs after it (`apply_buffs_to_damage`). Either disagreeing is flagged in red.
@@ -207,6 +239,10 @@ first attack). The grid shows, per breed and target index:
   skipped.
   Known gaps: instakill perks (Killing Shot, Murderous Prowess), buffs on the target (poison,
   bleed, balefire, target health), ranged falloff - these show up as mismatches.
+  Staggers are logged too: the real tier and strength next to the stagger sheet's prediction
+  for the enemy's actual stacks and whether it was attacking. Expect mismatches where an
+  attack has its own stagger rules (ignored staggers, its own stagger reduction) or a breed's
+  repeat-heavy immunity kicks in.
 
 ## Exporting
 

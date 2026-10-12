@@ -28,7 +28,8 @@ local mod = get_mod("WeaponEditor")
 		fork                 copy a profile under a new name (the balance mod's prefix) and point this
 		                     attack (or all attacks of the weapon using it) at it - exports as a new block
 		breakpoints          button on any attack (or /we_breakpoints): hits-to-kill grid comparing
-		                     now / balance mod / vanilla, plus a hit log checking predictions against real hits
+		                     now / balance mod / vanilla, plus a hit log checking predictions against real hits.
+		                     Its "stagger" sheet shows the stagger tier each hit causes instead
 		+ combo              button next to it: adds the attack to a combo the grid can show instead
 		                     (attacks of the combo, repeated in order, needed to kill)
 		/we_export            copies the export to the clipboard (and the console log)
@@ -190,10 +191,10 @@ local function host()
 	return editor.host
 end
 
--- Vanilla game stagger rule (damage_utils.lua calculate_damage): ranged profiles count as at
--- least 1 stack, bonus per stack from the difficulty
+-- Vanilla game stagger rule (damage_utils.lua calculate_damage): at most 2 stacks count,
+-- ranged profiles count as at least 1, bonus per stack from the difficulty
 local function generic_stagger_multiplier(damage_profile, stagger_number, attacker_unit, difficulty_settings)
-	local stagger = stagger_number or 0
+	local stagger = math.min(stagger_number or 0, 2)
 
 	if damage_profile.no_stagger_damage_reduction_ranged then
 		stagger = math.max(1, stagger)
@@ -219,7 +220,7 @@ editor = {
 	breakpoints_open = false,
 	breakpoint_target = nil, -- keys of the sub-action shown in the breakpoint window
 	-- Breakpoint combo steps in order: { keys = sub-action keys, hit_zone_index, stagger_index,
-	-- critical } (indices into the breakpoint window's option lists)
+	-- critical, opportunist } (indices into the breakpoint window's option lists)
 	breakpoint_combo = {},
 	breakpoint_show_combo = false, -- the breakpoint window shows the combo instead of the attack
 	-- template name -> true when an edited field only takes effect after a re-equip
@@ -1215,6 +1216,20 @@ local function hook_damage_functions_directly()
 	mod:hook(DamageUtils, "apply_buffs_to_damage", breakpoints.on_apply_buffs_to_damage)
 end
 
+-- Hit log staggers: balance mods keep the game's stagger calculation, so this is always hooked
+-- directly. A plain pass-through while the hit log is off.
+local stagger_hook_installed = false
+
+local function hook_stagger_function()
+	if stagger_hook_installed then
+		return
+	end
+
+	stagger_hook_installed = true
+
+	mod:hook(DamageUtils, "calculate_stagger_player", breakpoints.on_calculate_stagger)
+end
+
 -- Runs on the first frame after all mods loaded: a balance mod registers from its own
 -- on_all_mods_loaded, which may come after the editor's, and restoring forks needs it
 local startup_pending = false
@@ -1225,6 +1240,8 @@ local function run_startup()
 	if not (host().add_calculate_damage_observer and host().add_apply_buffs_to_damage_wrapper) then
 		hook_damage_functions_directly()
 	end
+
+	hook_stagger_function()
 
 	if state.baseline then
 		if state.needs_reapply then
@@ -1470,7 +1487,7 @@ function editor.show_breakpoints(keys)
 end
 
 -- Appends an attack to the breakpoint combo and shows the combo. The step's hit zone, stagger
--- stacks and crit start from the breakpoint window's current options.
+-- stacks, crit and Opportunist start from the breakpoint window's current options.
 function editor.add_to_combo(keys)
 	local combo = editor.breakpoint_combo
 	local options = editor.ui_state.breakpoint_options
@@ -1480,6 +1497,7 @@ function editor.add_to_combo(keys)
 		hit_zone_index = options and options.hit_zone_index or 1,
 		stagger_index = options and options.stagger_index or 1,
 		critical = options and options.critical or false,
+		opportunist = options and options.opportunist or false,
 	}
 	editor.breakpoint_show_combo = true
 	editor.breakpoints_open = true
