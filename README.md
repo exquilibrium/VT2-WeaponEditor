@@ -25,7 +25,7 @@ they were before the balance mod changed them:
 - **Editor loads first:** it takes the snapshot itself.
 - **Balance mod loads first:** the balance mod takes it on the editor's behalf, before any of
   its change files run, into the global `WEAPON_EDITOR_VANILLA_SNAPSHOT` (TourneyBalance:
-  `debugging/weapon_editor_support.lua`).
+  `debugging/dev_tools_support.lua`).
 - **Neither** (a balance mod without that support, loaded first): chat warns at launch that
   the vanilla comments are wrong. Move Weapon Editor above it in the launcher.
 
@@ -54,7 +54,7 @@ end
 ```
 
 TourneyBalance's full registration (and the snapshot on the editor's behalf) is
-`scripts/mods/TourneyBalance/debugging/weapon_editor_support.lua`. For Class Balance or another
+`scripts/mods/TourneyBalance/debugging/dev_tools_support.lua`. For Class Balance or another
 mod in the same family, copy that file and adjust the names; the snapshot part checks for the
 editor by its Workshop id (3818239110) or name.
 
