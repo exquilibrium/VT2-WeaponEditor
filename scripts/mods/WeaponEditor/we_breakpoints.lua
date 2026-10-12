@@ -242,6 +242,36 @@ end
 	Grid data
 ]]
 
+-- Sub-actions with weapon_mode_overrides (the Bright Wizard scythe) swap settings such as their
+-- damage profile by the weapon's mode (ActionSweep._populate_sweep_action_data). The grid uses
+-- the mode the weapon starts in, from its template's custom_data - for the scythe that's scythe
+-- mode, which it only leaves briefly after a discharge. Returns the sub-action as the attack
+-- sees it and the mode used (nil when the sub-action has no overrides).
+local function apply_mode_overrides(sub_action, template_name)
+	local mode_key = sub_action.weapon_mode_key
+	local mode_overrides = mode_key and sub_action.weapon_mode_overrides
+
+	if type(mode_overrides) ~= "table" then
+		return sub_action, nil
+	end
+
+	local template = rawget(Weapons, template_name)
+	local mode = template and type(template.custom_data) == "table" and template.custom_data[mode_key]
+	local overrides = mode ~= nil and mode_overrides[mode]
+
+	if type(overrides) ~= "table" then
+		return sub_action, nil
+	end
+
+	local resolved = setmetatable({}, { __index = sub_action })
+
+	for key, value in pairs(overrides) do
+		resolved[key] = value
+	end
+
+	return resolved, mode
+end
+
 -- The damage profile(s) of one action in each version of the data. Each hand of a dual
 -- weapon action is its own entry.
 local function resolve_profiles(editor, target_keys)
@@ -261,12 +291,19 @@ local function resolve_profiles(editor, target_keys)
 		},
 	}
 	local hands = {}
+	local weapon_mode = nil
 
 	for _, variant in ipairs(VARIANTS) do
 		local source = sources[variant]
 
 		if type(source.sub_action) == "table" and source.profiles then
-			local left_name, right_name = ActionUtils.get_damage_profile_name(source.sub_action, source.sub_action.weapon_action_hand)
+			local sub_action, mode = apply_mode_overrides(source.sub_action, target_keys[2])
+
+			if variant == "now" then
+				weapon_mode = mode
+			end
+
+			local left_name, right_name = ActionUtils.get_damage_profile_name(sub_action, sub_action.weapon_action_hand)
 
 			for hand_index, name in ipairs({ left_name or false, right_name or false }) do
 				if name then
@@ -292,6 +329,7 @@ local function resolve_profiles(editor, target_keys)
 
 	for hand_index = 1, 2 do
 		if hands[hand_index] and hands[hand_index].profiles.now then
+			hands[hand_index].weapon_mode = weapon_mode
 			result[#result + 1] = hands[hand_index]
 		end
 	end
@@ -683,7 +721,7 @@ local function draw_grid(grid, options)
 		local hand = hand_grid.hand
 
 		Imgui.separator()
-		Imgui.text(string.format("%s%s", #grid.hands > 1 and (hand.label .. ": ") or "", hand.names.now))
+		Imgui.text(string.format("%s%s%s", #grid.hands > 1 and (hand.label .. ": ") or "", hand.names.now, hand.weapon_mode and string.format(" (%s mode)", tostring(hand.weapon_mode)) or ""))
 
 		if hand.names.baseline ~= hand.names.now or hand.names.vanilla ~= hand.names.now then
 			text_colored(string.format("%s profile %s, vanilla profile %s", label, tostring(hand.names.baseline or "-"), tostring(hand.names.vanilla or "-")), INFO_COLOR)
