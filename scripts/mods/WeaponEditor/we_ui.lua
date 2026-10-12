@@ -313,7 +313,7 @@ local function cached_profile_users(editor, profile_name)
 	return users
 end
 
--- A balance mod's new profile (tb_x) has no vanilla twin of the same name: compare against the
+-- A balance mod's new profile (mb_x) has no vanilla twin of the same name: compare against the
 -- profile the actions now using it pointed at before the balance mod
 local function vanilla_counterpart(editor, profile_name)
 	local s = editor.ui_state
@@ -1393,7 +1393,7 @@ end
 -- Returns true when the window should close. The body runs in a pcall so end_window is
 -- always reached - an error between begin/end would leave Imgui's window stack broken.
 function ui.draw(editor)
-	-- /tbwe_reset_windows: windows dragged outside the game window can't be grabbed back
+	-- /we_reset_windows: windows dragged outside the game window can't be grabbed back
 	if editor.pending_window_reset.editor then
 		editor.pending_window_reset.editor = nil
 

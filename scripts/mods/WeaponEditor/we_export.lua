@@ -1,11 +1,11 @@
 --[[
 	Weapon editor: turns the current edits into Lua for the weapon change files.
 
-	(Examples use TourneyBalance's registration: label "TB", profiles in NewDamageProfileTemplates.)
+	(Examples assume a registration with label "MB", prefix "mb_", profiles in NewDamageProfileTemplates.)
 
-	- Weapons edits             one assignment per field, "-- vanilla: X" (plus "prev TB: Y"
+	- Weapons edits             one assignment per field, "-- vanilla: X" (plus "prev MB: Y"
 	                            when the balance mod had already changed it)
-	- balance mod's profiles    the whole NewDamageProfileTemplates.tb_x = { ... } block,
+	- balance mod's profiles    the whole NewDamageProfileTemplates.mb_x = { ... } block,
 	                            re-printed to replace the existing one. Preset names that are
 	                            still untouched stay names, every field that differs from the
 	                            vanilla profile it replaced gets a "-- vanilla:" comment
@@ -376,8 +376,8 @@ local function vanilla_counterparts(ctx, profile_name, users)
 end
 
 -- A whole profile block: the balance mod's own profiles (replacing their existing block) and
--- forks (a new block). Written into its authored profiles table (NewDamageProfileTemplates for
--- TourneyBalance), or straight into DamageProfileTemplates when it has none.
+-- forks (a new block). Written into its authored profiles table (e.g. NewDamageProfileTemplates),
+-- or straight into DamageProfileTemplates when it has none.
 local function print_profile_block_section(ctx, profile_name, edits)
 	local out = ctx.out
 	local users = ctx.editor.profile_users(profile_name)

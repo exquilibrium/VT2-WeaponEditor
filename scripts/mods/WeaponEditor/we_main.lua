@@ -15,9 +15,9 @@ local mod = get_mod("WeaponEditor")
 	exports. See README.md.
 
 	Flow:
-		/tbwe                open/close the editor window (F3 switches between using it and playing)
+		/we                   open/close the editor window (F3 switches between using it and playing)
 		edit values          action and damage profile edits apply to the next swing/hit. Template
-		                     buffs (dodge, movement) and ammo_data need "re-equip" (or /tbwe_reequip),
+		                     buffs (dodge, movement) and ammo_data need "re-equip" (or /we_reequip),
 		                     which the window flags when needed. Damage profiles
 		                     open with an "attack sheet" (per-target columns, armor types named)
 		structure mode       add/remove fields, add/remove/duplicate/reorder array entries (new
@@ -25,14 +25,14 @@ local mod = get_mod("WeaponEditor")
 		explosions, spread   searchable on their own, and opened from the fields naming them.
 		                     Weapons fire their own table.clone'd copy of an explosion: "link to
 		                     global" points the weapon at ExplosionTemplates.x so edits reach both
-		fork                 copy a profile into a new tb_ profile and point this attack (or all
-		                     attacks of the weapon using it) at it - exports as a new block
-		breakpoints          button on any attack (or /tbwe_breakpoints): hits-to-kill grid comparing
+		fork                 copy a profile under a new name (the balance mod's prefix) and point this
+		                     attack (or all attacks of the weapon using it) at it - exports as a new block
+		breakpoints          button on any attack (or /we_breakpoints): hits-to-kill grid comparing
 		                     now / balance mod / vanilla, plus a hit log checking predictions against real hits
-		/tbwe_export         copies the export to the clipboard (and the console log)
+		/we_export            copies the export to the clipboard (and the console log)
 		paste, rebuild, restart
 		                     on launch, edits that are now in the files are dropped automatically,
-		                     anything else is re-applied, and /tbwe_status reports which is which
+		                     anything else is re-applied, and /we_status reports which is which
 
 	Snapshots:
 		vanilla      the tables before any balance mod changed them. Taken by this file when the
@@ -139,7 +139,7 @@ else
 		vanilla = handed_over and handed_over.tables or capture_tables(),
 		vanilla_source = handed_over and handed_over.taken_by or "WeaponEditor",
 		-- Set when the editor took its own snapshot after a balance mod already changed the
-		-- tables: NewDamageProfileTemplates is the TourneyBalance/Class Balance family's table
+		-- tables: balance mods built on the same base define their new profiles in NewDamageProfileTemplates
 		vanilla_tainted = not handed_over and next(rawget(_G, "NewDamageProfileTemplates") or {}) ~= nil,
 		mods_before = not handed_over and mods_loaded_before_editor() or {},
 		baseline = nil,
@@ -160,8 +160,8 @@ end
 
 	Every field is optional; missing ones fall back to the game's own behavior:
 		name                      key for saved edits/forks (edits of different mods never mix)
-		label                     short name shown for its baseline column/values ("TB")
-		profile_prefix            prefix for forked profiles ("tb_")
+		label                     short name shown for its baseline column/values ("MB")
+		profile_prefix            prefix for forked profiles ("mb_")
 		authored_profiles_global  global its change files define new profiles in, resolved by
 		                          its own setup code ("NewDamageProfileTemplates"); enables
 		                          whole-block profile export and forks in that format
@@ -231,8 +231,8 @@ function editor.on_profiles_changed()
 	ui.invalidate_profile_caches(editor)
 end
 
--- The balance mod's table of profiles defined by its change files (NewDamageProfileTemplates
--- for TourneyBalance), or nil when it has none / none registered
+-- The balance mod's table of profiles defined by its change files (e.g.
+-- NewDamageProfileTemplates), or nil when it has none / none registered
 function editor.authored_profiles()
 	local global_name = host().authored_profiles_global
 
@@ -861,8 +861,8 @@ end
 
 --[[
 	Forks: a copy of an existing profile under a new name (the balance mod's prefix), with the
-	chosen actions pointed at it - what TourneyBalance's change files do by hand with
-	NewDamageProfileTemplates.tb_x
+	chosen actions pointed at it - what a balance mod's change files do by hand with
+	NewDamageProfileTemplates.mb_x
 ]]
 
 local function save_forks()
@@ -879,7 +879,7 @@ local function save_forks()
 	mod:set(settings_key("forks"), table.concat(lines, "\n"))
 end
 
--- Builds the profile the way TourneyBalance's change files + _damage_profile_setup.lua would:
+-- Builds the profile the way a balance mod's change files + profile setup code would:
 -- an authored copy that names untouched PowerLevelTemplates presets (into the balance mod's
 -- authored profiles table, if it has one), and a live copy that references them (so a later
 -- edit copies the preset first, like any other shared table).
@@ -917,7 +917,7 @@ local function create_fork(source_name, new_name)
 
 	DamageProfileTemplates[new_name] = live
 
-	-- The game (and TB's _damage_profile_setup.lua) gives every profile a zero-attack "_no_damage" twin, which
+	-- The game (and balance mods' profile setup code) gives every profile a zero-attack "_no_damage" twin, which
 	-- area_damage_system.lua looks up by name at runtime
 	local no_damage = core.deep_copy(live)
 
@@ -1597,7 +1597,7 @@ function mod.update()
 		run_startup()
 	end
 
-	-- Before the window check: commands like /tbwe_revert_all change edits with it closed
+	-- Before the window check: commands like /we_revert_all change edits with it closed
 	if edits_dirty_since and main_time() - edits_dirty_since >= SAVE_DELAY then
 		flush_saved_edits()
 	end
@@ -1647,7 +1647,7 @@ end
 	Commands
 ]]
 
-mod:command("tbwe", "Weapon editor: open/close the editor window.", function ()
+mod:command("we", "Weapon editor: open/close the editor window.", function ()
 	if editor.window_open then
 		close_window()
 	else
@@ -1655,31 +1655,31 @@ mod:command("tbwe", "Weapon editor: open/close the editor window.", function ()
 	end
 end)
 
-mod:command("tbwe_breakpoints", "Weapon editor: show/hide the breakpoint window (opens the editor too).", function ()
+mod:command("we_breakpoints", "Weapon editor: show/hide the breakpoint window (opens the editor too).", function ()
 	open_window()
 	editor.toggle_breakpoints()
 end)
 
-mod:command("tbwe_reequip", "Weapon editor: respawn the wielded weapon so wield/spawn-time fields (dodge buffs, ammo) apply.", function ()
+mod:command("we_reequip", "Weapon editor: respawn the wielded weapon so wield/spawn-time fields (dodge buffs, ammo) apply.", function ()
 	editor.reequip_wielded()
 end)
 
-mod:command("tbwe_reset_windows", "Weapon editor: move the editor and breakpoint windows back on screen (default position and size).", function ()
+mod:command("we_reset_windows", "Weapon editor: move the editor and breakpoint windows back on screen (default position and size).", function ()
 	editor.pending_window_reset.editor = true
 	editor.pending_window_reset.breakpoints = true
 
 	open_window()
 end)
 
-mod:command("tbwe_export", "Weapon editor: copy all edits as Lua (with vanilla comments) to the clipboard.", function ()
+mod:command("we_export", "Weapon editor: copy all edits as Lua (with vanilla comments) to the clipboard.", function ()
 	editor.export()
 end)
 
-mod:command("tbwe_revert_all", "Weapon editor: revert every edit to what the balance mod's files load.", function ()
+mod:command("we_revert_all", "Weapon editor: revert every edit to what the balance mod's files load.", function ()
 	report("Reverted %d edit(s).", editor.revert_all())
 end)
 
-mod:command("tbwe_status", "Weapon editor: list current edits and what happened to last session's.", function ()
+mod:command("we_status", "Weapon editor: list current edits and what happened to last session's.", function ()
 	local restore = editor.last_restore
 
 	if restore then

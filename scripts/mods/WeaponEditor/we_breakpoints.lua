@@ -2,7 +2,7 @@
 	Weapon editor: breakpoint grid and hit log.
 
 	Damage comes from the registered balance mod's own formula (its damage_calculation and
-	stagger_multiplier - for TourneyBalance, 01_damage_calc_changes.lua) or, unregistered, the
+	stagger_multiplier) or, unregistered, the
 	game's DamageUtils.custom_calculate_damage, with everything calculate_damage would read off a
 	target unit taken from the breed instead. Checked against real hits with the hit log: it
 	matches except for instakill perks (Killing Shot, Murderous Prowess), which aren't modelled.
@@ -11,7 +11,7 @@
 	Every cell compares three versions of the attack's damage profile, all through that same
 	formula, so the difference is purely the weapon data:
 		now       live tables, including editor edits
-		baseline  the balance mod as loaded from its files (labelled with its label, e.g. "TB")
+		baseline  the balance mod as loaded from its files (labelled with its registered label)
 		vanilla   the profile the action used before the balance mod
 ]]
 
@@ -101,7 +101,7 @@ local HIT_ZONES = { "torso", "head" }
 local STAGGER_LEVELS = { "0", "1", "2" }
 local TARGET_COUNTS = { "1", "2", "3", "4", "5" }
 local DISPLAY_MODES = { "hits to kill", "damage" }
-local VARIANTS = { "now", "tb", "vanilla" }
+local VARIANTS = { "now", "baseline", "vanilla" }
 
 --[[
 	Damage
@@ -130,7 +130,7 @@ end
 
 --[[
 	Attacker-side damage buffs. DamageUtils.add_damage_network_player runs calculate_damage and
-	then apply_buffs_to_damage on its result (TB's version: 02_damage_taken_changes.lua), which
+	then apply_buffs_to_damage on its result (which a balance mod may replace), which
 	is where talent/property damage buffs live: Heroism (increased_weapon_damage_heavy_attack),
 	Grail Knight's first-target perk (first_melee_hit_damage), melee/ranged/2h power-up
 	properties, damage_dealt... That function has side effects (procs, Gromril, RPCs), so this
@@ -251,7 +251,7 @@ local function resolve_profiles(editor, target_keys)
 			sub_action = core.live_value(target_keys),
 			profiles = DamageProfileTemplates,
 		},
-		tb = {
+		baseline = {
 			sub_action = core.snapshot_value(state.baseline, target_keys),
 			profiles = state.baseline and state.baseline.DamageProfileTemplates,
 		},
@@ -355,8 +355,8 @@ local function compute_grid(editor, options)
 		local current_category = nil
 
 		-- Columns whose profile is identical to an earlier column's reuse its numbers instead of
-		-- recomputing: TB = now when nothing in that profile is edited, vanilla = TB when
-		-- TourneyBalance left the profile alone
+		-- recomputing: baseline = now when nothing in that profile is edited, vanilla = baseline
+		-- when the balance mod left the profile alone
 		local same_as = {}
 		local now_path = "DamageProfileTemplates." .. tostring(hand.names.now)
 		local now_edited = false
@@ -369,12 +369,12 @@ local function compute_grid(editor, options)
 			end
 		end
 
-		if hand.profiles.tb and hand.names.tb == hand.names.now and not now_edited then
-			same_as.tb = "now"
+		if hand.profiles.baseline and hand.names.baseline == hand.names.now and not now_edited then
+			same_as.baseline = "now"
 		end
 
-		if hand.profiles.vanilla and hand.profiles.tb and core.deep_equal(hand.profiles.vanilla, hand.profiles.tb) then
-			same_as.vanilla = "tb"
+		if hand.profiles.vanilla and hand.profiles.baseline and core.deep_equal(hand.profiles.vanilla, hand.profiles.baseline) then
+			same_as.vanilla = "baseline"
 		end
 
 		for _, entry in ipairs(breakpoints.BREEDS) do
@@ -434,7 +434,7 @@ local function compute_grid(editor, options)
 end
 
 --[[
-	Hit log - fed by two of the registered balance mod's dispatchers (TourneyBalance.lua),
+	Hit log - fed by two of the registered balance mod's dispatchers,
 	called in this order for every hit:
 		add_calculate_damage_observer     base + stagger damage, checked against the formula
 		add_apply_buffs_to_damage_wrapper damage after damage buffs, checked against
@@ -527,7 +527,7 @@ local function pack(...)
 	}
 end
 
--- Wrapper for TB's apply_buffs_to_damage dispatcher: passes everything through untouched and
+-- Wrapper for the balance mod's apply_buffs_to_damage dispatcher: passes everything through untouched and
 -- records the buffed damage on the hit's entry. Runs for every damage event in the game, so
 -- with the hit log off it's a plain tail call.
 function breakpoints.on_apply_buffs_to_damage(func, ...)
@@ -580,22 +580,22 @@ local function format_cell_value(cell_variant, display_index)
 	return cell_variant.hits and tostring(cell_variant.hits) or "-"
 end
 
--- now vs TB: fewer hits / more damage is better
+-- now vs baseline: fewer hits / more damage is better
 local function cell_color(cell, display_index)
-	local now, tb = cell.now, cell.tb
+	local now, baseline = cell.now, cell.baseline
 
-	if not (now and tb) then
+	if not (now and baseline) then
 		return nil
 	end
 
 	local now_value = display_index == 2 and -now.damage or now.hits
-	local tb_value = display_index == 2 and -tb.damage or tb.hits
+	local baseline_value = display_index == 2 and -baseline.damage or baseline.hits
 
-	if not (now_value and tb_value) or math.abs(now_value - tb_value) < 1e-3 then
+	if not (now_value and baseline_value) or math.abs(now_value - baseline_value) < 1e-3 then
 		return nil
 	end
 
-	return now_value < tb_value and BETTER_COLOR or WORSE_COLOR
+	return now_value < baseline_value and BETTER_COLOR or WORSE_COLOR
 end
 
 local function draw_options(options)
@@ -685,8 +685,8 @@ local function draw_grid(grid, options)
 		Imgui.separator()
 		Imgui.text(string.format("%s%s", #grid.hands > 1 and (hand.label .. ": ") or "", hand.names.now))
 
-		if hand.names.tb ~= hand.names.now or hand.names.vanilla ~= hand.names.now then
-			text_colored(string.format("%s profile %s, vanilla profile %s", label, tostring(hand.names.tb or "-"), tostring(hand.names.vanilla or "-")), INFO_COLOR)
+		if hand.names.baseline ~= hand.names.now or hand.names.vanilla ~= hand.names.now then
+			text_colored(string.format("%s profile %s, vanilla profile %s", label, tostring(hand.names.baseline or "-"), tostring(hand.names.vanilla or "-")), INFO_COLOR)
 		end
 
 		Imgui.columns(target_count + 2, true)
@@ -722,7 +722,7 @@ local function draw_grid(grid, options)
 					Imgui.next_column()
 
 					local cell = row.cells[target_index]
-					local text = string.format("%s | %s | %s", format_cell_value(cell.now, options.display_index), format_cell_value(cell.tb, options.display_index), format_cell_value(cell.vanilla, options.display_index))
+					local text = string.format("%s | %s | %s", format_cell_value(cell.now, options.display_index), format_cell_value(cell.baseline, options.display_index), format_cell_value(cell.vanilla, options.display_index))
 					local color = cell_color(cell, options.display_index)
 
 					if color then
@@ -816,7 +816,7 @@ end
 -- Returns true when the window should close. The body runs in a pcall so end_window is
 -- always reached - an error between begin/end would leave Imgui's window stack broken.
 function breakpoints.draw(editor, t)
-	-- /tbwe_reset_windows: offset from the editor window so both stay grabbable
+	-- /we_reset_windows: offset from the editor window so both stay grabbable
 	if editor.pending_window_reset.breakpoints then
 		editor.pending_window_reset.breakpoints = nil
 

@@ -5,13 +5,13 @@ breakpoints, then export the changes as Lua to paste into the balance mod's weap
 files. Every exported value carries a `-- vanilla:` comment.
 
 It's a separate dev mod: only people doing balance work enable it, so it can't ship to
-players by accident. Built for TourneyBalance (which registers itself, see below), but it works
-with any balance mod.
+players by accident. It works with any balance mod; one that registers itself (see below) gets
+its own damage formula in the breakpoint grid and exports in its own format.
 
 ## Setup
 
 1. Enable **Weapon Editor** in the launcher alongside the balance mod. Load order doesn't
-   matter (see "Vanilla snapshot" below).
+   matter if the balance mod supports the editor (see "Vanilla snapshot" below).
 2. Build, then **fully restart the game**. A VMF hot reload is not enough: the `we_*.lua`
    files are loaded with `require`, which keeps the old copies until restart.
 3. Play solo or as host. The server calculates damage from its own tables, so edits only
@@ -24,14 +24,35 @@ they were before the balance mod changed them:
 
 - **Editor loads first:** it takes the snapshot itself.
 - **Balance mod loads first:** the balance mod takes it on the editor's behalf, before any of
-  its change files run, into the global `WEAPON_EDITOR_VANILLA_SNAPSHOT` (TourneyBalance:
-  `debugging/dev_tools_support.lua`).
+  its change files run, into the global `WEAPON_EDITOR_VANILLA_SNAPSHOT` (see below).
 - **Neither** (a balance mod without that support, loaded first): chat warns at launch that
   the vanilla comments are wrong. Move Weapon Editor above it in the launcher.
 
-## Balance mod registration
+## Balance mod support
 
-A balance mod registers from its `on_all_mods_loaded`. Every field is optional; without
+A balance mod supports the editor with a small support file, dofile'd before any of its change
+files. It does two things, both only while the editor is enabled.
+
+**1. The vanilla snapshot.** Runs at load time, when the editor is enabled (check
+`Managers.mod._mods` for Workshop id 3818239110 or the name "WeaponEditor" / "Weapon Editor")
+and neither `WEAPON_EDITOR_STATE` nor `WEAPON_EDITOR_VANILLA_SNAPSHOT` exists yet:
+
+```lua
+local seen = {} -- one shared table, so profiles still share their presets in the copy
+
+rawset(_G, "WEAPON_EDITOR_VANILLA_SNAPSHOT", {
+	taken_by = "MyBalanceMod",
+	tables = {
+		Weapons = deep_copy(Weapons, seen),
+		DamageProfileTemplates = deep_copy(DamageProfileTemplates, seen),
+		PowerLevelTemplates = deep_copy(PowerLevelTemplates, seen),
+		ExplosionTemplates = deep_copy(ExplosionTemplates, seen),
+		SpreadTemplates = deep_copy(SpreadTemplates, seen),
+	},
+})
+```
+
+**2. Registration**, from its `on_all_mods_loaded`. Every field is optional; without
 registration the editor uses the game's own damage formula, hooks the damage functions itself
 (the hit log then can't check the formula step) and exports profile changes line by line.
 
@@ -40,38 +61,35 @@ local weapon_editor = get_mod("WeaponEditor")
 
 if weapon_editor and weapon_editor.register_balance_mod then
 	weapon_editor.register_balance_mod({
-		name = "TourneyBalance",                  -- key for saved edits/forks
-		label = "TB",                             -- shown for its baseline values/column
-		profile_prefix = "tb_",                   -- forked profile names
+		name = "MyBalanceMod",                    -- key for saved edits/forks
+		label = "MB",                             -- shown for its baseline values/column
+		profile_prefix = "mb_",                   -- forked profile names
 		authored_profiles_global = "NewDamageProfileTemplates", -- whole-block profile export + forks
 		export_key_order = { profile = { order = {...}, unknown_before = "default_target" }, target = {...} },
 		damage_calculation = do_damage_calculation, -- its own formula, if it replaces the game's
 		stagger_multiplier = function (damage_profile, stagger_number, attacker_unit, difficulty_settings) ... end,
 		add_calculate_damage_observer = function (observer) ... end,      -- hit log, formula step
 		add_apply_buffs_to_damage_wrapper = function (wrapper) ... end,   -- hit log, damage buff step
+		-- where a former built-in editor saved its edits (moved over once, at the first launch)
+		legacy_settings_mod = "MyBalanceMod", legacy_edits_setting = "...", legacy_forks_setting = "...",
 	})
 end
 ```
 
-TourneyBalance's full registration (and the snapshot on the editor's behalf) is
-`scripts/mods/TourneyBalance/debugging/dev_tools_support.lua`. For Class Balance or another
-mod in the same family, copy that file and adjust the names; the snapshot part checks for the
-editor by its Workshop id (3818239110) or name.
-
-The rest of this guide uses TourneyBalance's registration as the example: its baseline label
-is "TB", forks are named `tb_...` and its profile blocks are `NewDamageProfileTemplates.tb_x`.
+The rest of this guide uses that example registration: its baseline label is "MB", forks are
+named `mb_...` and its profile blocks are `NewDamageProfileTemplates.mb_x`.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `/tbwe` | Open/close the editor window |
-| `/tbwe_breakpoints` | Show/hide the breakpoint window |
-| `/tbwe_reequip` | Respawn the wielded weapon so wield/spawn-time fields apply |
-| `/tbwe_export` | Copy all edits as Lua to the clipboard (also printed to the console log) |
-| `/tbwe_status` | List pending edits, and what happened to last session's at launch |
-| `/tbwe_revert_all` | Revert every edit to what the balance mod's files load |
-| `/tbwe_reset_windows` | Move both windows back on screen (they vanish if dragged outside the game window) |
+| `/we` | Open/close the editor window |
+| `/we_breakpoints` | Show/hide the breakpoint window |
+| `/we_reequip` | Respawn the wielded weapon so wield/spawn-time fields apply |
+| `/we_export` | Copy all edits as Lua to the clipboard (also printed to the console log) |
+| `/we_status` | List pending edits, and what happened to last session's at launch |
+| `/we_revert_all` | Revert every edit to what the balance mod's files load |
+| `/we_reset_windows` | Move both windows back on screen (they vanish if dragged outside the game window) |
 
 **F3** switches between using the windows (mouse cursor, game input blocked) and playing.
 Chat can't be opened while the windows have input, so press F3 before typing a command.
@@ -99,8 +117,8 @@ Chat can't be opened while the windows have input, so press F3 before typing a c
 - Edits apply to the next swing or hit - no re-equip needed - except fields only read when the
   weapon is wielded or spawned (template `buffs` such as dodge and movement, and `ammo_data`).
   Editing those shows a red warning with a **re-equip** button (also in the menu bar and as
-  `/tbwe_reequip`). Ammo is kept as a percentage of the new maximum.
-- Every edited field shows its **TB** value (as loaded from the files) and its **vanilla**
+  `/we_reequip`). Ammo is kept as a percentage of the new maximum.
+- Every edited field shows its **MB** value (as loaded from the files) and its **vanilla**
   value, plus a **revert** button. There are also revert buttons per weapon, per profile, per
   explosion/spread entry, in the **All edits** list, and **Revert all**.
 - **Shared presets.** Vanilla profiles share `PowerLevelTemplates` presets (armor modifiers,
@@ -132,8 +150,8 @@ Tick **structure mode** at the top to add or remove fields and entries:
 
 ### Forking a profile
 
-Under a profile opened from an attack, **fork into a new tb_ profile** copies it under a new
-name (suggested `tb_<weapon>_<attack>`) and points **this attack** or **all attacks of this
+Under a profile opened from an attack, **fork into a new mb_ profile** copies it under a new
+name (suggested `mb_<weapon>_<attack>`) and points **this attack** or **all attacks of this
 weapon using it** at the copy. It exports as a new `NewDamageProfileTemplates` block.
 **delete fork** points the attacks back and removes it. A fork is also removed automatically
 once no attack points at it anymore (e.g. after reverting the edits that pointed attacks at it,
@@ -153,18 +171,18 @@ or **Revert all**), so it no longer exports or comes back next session.
 
 ## Breakpoints
 
-Click **breakpoints** on any attack (or `/tbwe_breakpoints`, which starts on the weapon's
+Click **breakpoints** on any attack (or `/we_breakpoints`, which starts on the weapon's
 first attack). The grid shows, per breed and target index:
 
-    now | TB | vanilla
+    now | MB | vanilla
 
-- **now** = live data with your edits, **TB** = as loaded from the files, **vanilla** = the
+- **now** = live data with your edits, **MB** = as loaded from the files, **vanilla** = the
   profile the action used before the balance mod. All three use the balance mod's registered
   damage formula and stagger rule (the game's own without registration), so differences come
   only from the weapon data.
-- Green = your edit beats the TB value, red = worse.
+- Green = your edit beats the MB value, red = worse.
 - Options: your power level or a typed one, difficulty, hit zone (torso/head), crit, stagger
-  stacks (by the registered stagger rule - TB: 20% per stack, ranged counts as at least 1),
+  stacks (by the registered stagger rule, or the game's: ranged counts as at least 1),
   1-5 targets, hits-to-kill or raw damage, and which categories to show: **Trash, Elite,
   Specials, Other, Boss, Lords** (taken from the categories used in `breakpoints.BREEDS`, so a
   new category there gets its own checkbox automatically).
@@ -183,12 +201,12 @@ first attack). The grid shows, per breed and target index:
 
 ## Exporting
 
-`/tbwe_export` (or **Export to clipboard** in the menu) copies Lua grouped by what was edited:
+`/we_export` (or **Export to clipboard** in the menu) copies Lua grouped by what was edited:
 
 | Edited | Export |
 |---|---|
-| Weapon fields | One line per field: `Weapons.x... = 0.45 -- vanilla: 0.5` (plus `prev TB:` if TB already changed it) |
-| TB profiles (`NewDamageProfileTemplates`) | The whole `NewDamageProfileTemplates.tb_x = { ... }` block to replace the existing one, untouched presets kept as names, every field differing from the vanilla profile it replaced commented, plus a `-- changed:` summary |
+| Weapon fields | One line per field: `Weapons.x... = 0.45 -- vanilla: 0.5` (plus `prev MB:` if the balance mod already changed it) |
+| Balance mod profiles (`NewDamageProfileTemplates`) | The whole `NewDamageProfileTemplates.mb_x = { ... }` block to replace the existing one, untouched presets kept as names, every field differing from the vanilla profile it replaced commented, plus a `-- changed:` summary |
 | Forks | A new block to add, `-- vanilla:` against the forked profile |
 | Vanilla profiles | One line per field, or the whole copied sub-table where a shared preset was copied |
 | Explosion / spread entries | `ExplosionTemplates.x... = ...` / `SpreadTemplates.x... = ...` lines; explosion sections note weapons still on their own copy |
@@ -200,12 +218,12 @@ Paste each part into the matching weapon change file, rebuild and restart.
 
 Edits and forks are saved, so they survive a crash or restart. At launch the editor compares
 each saved edit against what the files now load: edits already in the files are **dropped**,
-the rest are **re-applied**. The chat message (and `/tbwe_status`) reports how many of each,
+the rest are **re-applied**. The chat message (and `/we_status`) reports how many of each,
 which doubles as a check that a paste landed.
 
 Saved edits are kept per balance mod (by its registered `name`), so edits made for
-TourneyBalance and for another balance mod never mix. Edits saved by the old built-in editor
-(TourneyBalance's own `tbwe_saved_*` settings) are moved over once, at the first launch.
+different balance mods never mix. Edits saved by a balance mod's former built-in editor
+(its `legacy_*` registration fields) are moved over once, at the first launch.
 
 ## Files
 
