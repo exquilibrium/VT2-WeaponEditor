@@ -2,7 +2,7 @@
 
 In-game Imgui tool for tuning a balance mod's weapons. You edit values while playing, check
 breakpoints, then export the changes as Lua to paste into the balance mod's weapon change
-files. Every exported value carries a `-- vanilla:` comment.
+files. Every exported value carries a `-- official:` comment.
 
 It's a separate dev mod: only people doing balance work enable it, so it can't ship to
 players by accident. It works with any balance mod; one that registers itself (see below) gets
@@ -19,14 +19,14 @@ its own damage formula in the breakpoint grid and exports in its own format.
 
 ### Vanilla snapshot
 
-The `-- vanilla:` comments and the breakpoint grid's vanilla column need the weapon tables as
+The `-- official:` comments and the breakpoint grid's official column need the weapon tables as
 they were before the balance mod changed them:
 
 - **Editor loads first:** it takes the snapshot itself.
 - **Balance mod loads first:** the balance mod takes it on the editor's behalf, before any of
   its change files run, into the global `WEAPON_EDITOR_VANILLA_SNAPSHOT` (see below).
 - **Neither** (a balance mod without that support, loaded first): chat warns at launch that
-  the vanilla comments are wrong. Move Weapon Editor above it in the launcher.
+  the official comments are wrong. Move Weapon Editor above it in the launcher.
 
 ## Balance mod support
 
@@ -48,9 +48,15 @@ rawset(_G, "WEAPON_EDITOR_VANILLA_SNAPSHOT", {
 		PowerLevelTemplates = deep_copy(PowerLevelTemplates, seen),
 		ExplosionTemplates = deep_copy(ExplosionTemplates, seen),
 		SpreadTemplates = deep_copy(SpreadTemplates, seen),
+		-- only the DoT templates: entries listed in DotTypeLookup or with a sub-buff whose
+		-- update_func is "apply_dot_damage" (see dot_templates in TB's dev_tools_support.lua)
+		BuffTemplates = deep_copy(dot_templates(), seen),
 	},
 })
 ```
+
+A snapshot without `BuffTemplates` still works; DoT templates' official values then show as
+nil and chat says so at launch.
 
 **2. Registration**, from its `on_all_mods_loaded`. Every field is optional; without
 registration the editor uses the game's own damage formula, hooks the damage functions itself
@@ -97,14 +103,16 @@ Chat can't be opened while the windows have input, so press F3 before typing a c
 ## Finding things
 
 - The editor opens on your **wielded weapon**. "Wielded weapon" re-selects it.
-- **Search** finds weapon templates, `[explosion]` entries (`ExplosionTemplates`) and
-  `[spread]` entries (`SpreadTemplates`).
+- **Search** finds weapon templates, `[explosion]` entries (`ExplosionTemplates`),
+  `[spread]` entries (`SpreadTemplates`) and `[dot]` entries (the DoT templates of
+  `BuffTemplates`).
 - A weapon shows its **actions** (action_one, action_two, ...) and their sub-actions, each
   labelled with the damage profile(s) it uses. Other template fields (dodge buffs, ammo,
   block angles, stamina) are under **other template fields**.
 - Fields that name something open it right below them: `damage_profile*` fields open the
   profile, `explosion_template` / `aoe` / `aoe_name` open the explosion, and
-  `default_spread_template` / `spread_template_override` open the spread template.
+  `default_spread_template` / `spread_template_override` open the spread template, and a
+  profile's `dot_template_name` opens its DoT template.
 - `*` after a name means something below it is edited.
 
 ## Editing
@@ -118,9 +126,13 @@ Chat can't be opened while the windows have input, so press F3 before typing a c
   weapon is wielded or spawned (template `buffs` such as dodge and movement, and `ammo_data`).
   Editing those shows a red warning with a **re-equip** button (also in the menu bar and as
   `/we_reequip`). Ammo is kept as a percentage of the new maximum.
-- Every edited field shows its **MB** value (as loaded from the files) and its **vanilla**
+- The windows call the game's own values (the vanilla snapshot) **official**.
+- Every edited field shows its **MB** value (as loaded from the files) and its **official**
   value, plus a **revert** button. There are also revert buttons per weapon, per profile, per
   explosion/spread entry, in the **All edits** list, and **Revert all**.
+- A field you haven't edited shows its **official** value (in blue) wherever the balance mod
+  changed it, or "official (not set)" for a field the balance mod added. In the attack sheet
+  that's a `~` next to the cell (`*` for your edits), with the values on hover.
 - **Shared presets.** Vanilla profiles share `PowerLevelTemplates` presets (armor modifiers,
   crit, cleave). Editing a field inside one first copies the preset into that profile, so other
   weapons are unaffected. Weapon action tables shared between templates are only flagged
@@ -166,6 +178,12 @@ or **Revert all**), so it no longer exports or comes back next session.
   `bw_fireball.lua` does by hand). After linking, edits reach both. Linking discards edits made
   inside that weapon's copy.
 - Spread templates are read live: edits apply immediately.
+- DoT templates (`BuffTemplates` entries such as `burning_dot_1tick`) hold the timing:
+  `duration`, `time_between_dot_damages`, `update_start_delay`. Edits apply to DoTs applied
+  from then on and export as `BuffTemplates.x...` lines. Tick damage comes from the template's
+  `damage_profile`, which opens right below it. The game builds separate copies of some burns at
+  load (Necromancer's `_balefire` variants, Pyromancer's infinite burn); the entry names them in
+  red, since edits don't reach them.
 - Projectiles are likewise per-weapon copies that nothing looks up by name, so they are edited
   (and exported) under the weapon's action (`projectile_info`), not as a separate entry.
 
@@ -174,9 +192,9 @@ or **Revert all**), so it no longer exports or comes back next session.
 Click **breakpoints** on any attack (or `/we_breakpoints`, which starts on the weapon's
 first attack). The grid shows, per breed and target index:
 
-    now | MB | vanilla
+    now | MB | official
 
-- **now** = live data with your edits, **MB** = as loaded from the files, **vanilla** = the
+- **now** = live data with your edits, **MB** = as loaded from the files, **official** = the
   profile the action used before the balance mod. All three use the balance mod's registered
   damage formula and stagger rule (the game's own without registration), so differences come
   only from the weapon data.
@@ -250,11 +268,11 @@ first attack). The grid shows, per breed and target index:
 
 | Edited | Export |
 |---|---|
-| Weapon fields | One line per field: `Weapons.x... = 0.45 -- vanilla: 0.5` (plus `prev MB:` if the balance mod already changed it) |
-| Balance mod profiles (`NewDamageProfileTemplates`) | The whole `NewDamageProfileTemplates.mb_x = { ... }` block to replace the existing one, untouched presets kept as names, every field differing from the vanilla profile it replaced commented, plus a `-- changed:` summary |
-| Forks | A new block to add, `-- vanilla:` against the forked profile |
+| Weapon fields | One line per field: `Weapons.x... = 0.45 -- official: 0.5` (plus `prev MB:` if the balance mod already changed it) |
+| Balance mod profiles (`NewDamageProfileTemplates`) | The whole `NewDamageProfileTemplates.mb_x = { ... }` block to replace the existing one, untouched presets kept as names, every field differing from the official profile it replaced commented, plus a `-- changed:` summary |
+| Forks | A new block to add, `-- official:` against the forked profile |
 | Vanilla profiles | One line per field, or the whole copied sub-table where a shared preset was copied |
-| Explosion / spread entries | `ExplosionTemplates.x... = ...` / `SpreadTemplates.x... = ...` lines; explosion sections note weapons still on their own copy |
+| Explosion / spread / DoT entries | `ExplosionTemplates.x... = ...` / `SpreadTemplates.x... = ...` / `BuffTemplates.x... = ...` lines; explosion sections note weapons still on their own copy |
 | Structural edits | A whole table (added field, rewritten list), `= nil` (removed) or `= ExplosionTemplates.x` (linked) |
 
 Paste each part into the matching weapon change file, rebuild and restart.

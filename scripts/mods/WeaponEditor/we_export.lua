@@ -3,12 +3,12 @@
 
 	(Examples assume a registration with label "MB", prefix "mb_", profiles in NewDamageProfileTemplates.)
 
-	- Weapons edits             one assignment per field, "-- vanilla: X" (plus "prev MB: Y"
+	- Weapons edits             one assignment per field, "-- official: X" (plus "prev MB: Y"
 	                            when the balance mod had already changed it)
 	- balance mod's profiles    the whole NewDamageProfileTemplates.mb_x = { ... } block,
 	                            re-printed to replace the existing one. Preset names that are
 	                            still untouched stay names, every field that differs from the
-	                            vanilla profile it replaced gets a "-- vanilla:" comment
+	                            vanilla profile it replaced gets a "-- official:" comment
 	- vanilla profiles          one assignment per field, or the whole sub-table where the
 	                            editor copied a shared preset (a leaf assignment there would
 	                            change the preset for every other weapon too)
@@ -50,12 +50,12 @@ local function leaf_comment(value, vanilla_node, key)
 	local vanilla_value = vanilla_node[key]
 
 	if type(vanilla_value) == "table" then
-		return " -- vanilla: <table>"
+		return " -- official: <table>"
 	elseif core.values_equal(value, vanilla_value) then
 		return ""
 	end
 
-	return " -- vanilla: " .. core.format_value(vanilla_value)
+	return " -- official: " .. core.format_value(vanilla_value)
 end
 
 local function preset_comment(ctx, preset_name, live_preset, vanilla_node, key)
@@ -66,9 +66,9 @@ local function preset_comment(ctx, preset_name, live_preset, vanilla_node, key)
 	local vanilla_value = vanilla_node[key]
 
 	if vanilla_value == nil then
-		return " -- vanilla: none"
+		return " -- official: none"
 	elseif type(vanilla_value) ~= "table" then
-		return " -- vanilla: " .. core.format_value(vanilla_value)
+		return " -- official: " .. core.format_value(vanilla_value)
 	elseif core.deep_equal(live_preset, vanilla_value) then
 		return ""
 	end
@@ -76,12 +76,12 @@ local function preset_comment(ctx, preset_name, live_preset, vanilla_node, key)
 	local vanilla_preset = ctx.vanilla_preset_names[vanilla_value]
 
 	if vanilla_preset == preset_name then
-		return " -- preset values changed since vanilla"
+		return " -- preset values changed since official"
 	elseif vanilla_preset then
-		return string.format(" -- vanilla: %q", vanilla_preset)
+		return string.format(" -- official: %q", vanilla_preset)
 	end
 
-	return " -- vanilla: inline table (differs)"
+	return " -- official: inline table (differs)"
 end
 
 --[[
@@ -217,7 +217,7 @@ local function print_table(ctx, authored, live, vanilla_node, indent, context)
 						if type(vanilla_value) == "table" then
 							vanilla_child = vanilla_value
 						else
-							open = open .. " -- vanilla: " .. core.format_value(vanilla_value)
+							open = open .. " -- official: " .. core.format_value(vanilla_value)
 						end
 					end
 
@@ -241,7 +241,7 @@ local function print_table(ctx, authored, live, vanilla_node, indent, context)
 			if live[key] == nil and not stamped then
 				local vanilla_value = vanilla_node[key]
 
-				out[#out + 1] = indent .. "-- removed: " .. key_label(key) .. " (vanilla: " .. (type(vanilla_value) == "table" and "<table>" or core.format_value(vanilla_value)) .. ")"
+				out[#out + 1] = indent .. "-- removed: " .. key_label(key) .. " (official: " .. (type(vanilla_value) == "table" and "<table>" or core.format_value(vanilla_value)) .. ")"
 			end
 		end
 	end
@@ -249,7 +249,7 @@ end
 
 local function vanilla_comment(ctx, keys, value, baseline)
 	local vanilla_value = core.snapshot_value(ctx.state.vanilla, keys)
-	local parts = { "vanilla: " .. core.format_value(vanilla_value) }
+	local parts = { "official: " .. core.format_value(vanilla_value) }
 
 	if not core.values_equal(baseline, vanilla_value) then
 		parts[#parts + 1] = "prev " .. ctx.editor.baseline_label() .. ": " .. core.format_value(baseline)
@@ -280,15 +280,15 @@ local function print_edit(ctx, edit)
 	if kind == "value" then
 		out[#out + 1] = edit.path .. " = " .. core.format_value(edit.value) .. vanilla_comment(ctx, edit.keys, edit.value, edit.baseline)
 	elseif kind == "removed" then
-		out[#out + 1] = edit.path .. " = nil -- vanilla: " .. short_value(vanilla_value)
+		out[#out + 1] = edit.path .. " = nil -- official: " .. short_value(vanilla_value)
 	elseif kind == "ref" then
-		out[#out + 1] = edit.path .. " = " .. edit.ref .. " -- vanilla: " .. (vanilla_value == nil and "none" or "the weapon's own copy")
+		out[#out + 1] = edit.path .. " = " .. edit.ref .. " -- official: " .. (vanilla_value == nil and "none" or "the weapon's own copy")
 	elseif kind == "table" then
 		local live_table = core.live_value(edit.keys)
 		local open = edit.path .. " = {"
 
 		if type(vanilla_value) ~= "table" then
-			open = open .. " -- vanilla: " .. core.format_value(vanilla_value)
+			open = open .. " -- official: " .. core.format_value(vanilla_value)
 		end
 
 		out[#out + 1] = open
@@ -389,13 +389,13 @@ local function print_profile_block_section(ctx, profile_name, edits)
 	local header = block_global .. "." .. profile_name .. " = {"
 
 	if counterpart then
-		header = header .. " -- vanilla: " .. counterpart
+		header = header .. " -- official: " .. counterpart
 
 		if #counterparts > 1 then
 			header = header .. " (comments compare against it; also replaces " .. table.concat(counterparts, ", ", 2) .. ")"
 		end
 	else
-		header = header .. " -- vanilla: none (new profile)"
+		header = header .. " -- official: none (new profile)"
 	end
 
 	local fork = ctx.state.forks and ctx.state.forks[profile_name]
@@ -522,7 +522,7 @@ function export.build(editor)
 	out[#out + 1] = "-- Weapon editor export (" .. tostring(editor.host.name) .. ")"
 
 	if state.vanilla_tainted then
-		out[#out + 1] = "-- WARNING: vanilla snapshot was taken after a balance mod already changed the tables - vanilla comments are wrong"
+		out[#out + 1] = "-- WARNING: vanilla snapshot was taken after a balance mod already changed the tables - official comments are wrong"
 	end
 
 	local template_names = table.keys(weapon_edits)

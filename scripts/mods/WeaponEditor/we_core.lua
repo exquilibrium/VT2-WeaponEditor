@@ -35,6 +35,45 @@ function core.deep_copy(value, seen)
 	return copy
 end
 
+--[[
+	DoT templates: the BuffTemplates entries a damage profile's dot_template_name names. Listed
+	in DotTypeLookup, or ticking through the game's DoT update (update_func "apply_dot_damage"),
+	which catches a balance mod's own DoTs too. The editor edits (and snapshots) only these out
+	of BuffTemplates.
+]]
+function core.is_dot_template(name, template)
+	if type(template) ~= "table" or type(template.buffs) ~= "table" then
+		return false
+	end
+
+	local lookup = rawget(_G, "DotTypeLookup")
+
+	if lookup and lookup[name] then
+		return true
+	end
+
+	for _, sub_buff in ipairs(template.buffs) do
+		if type(sub_buff) == "table" and sub_buff.update_func == "apply_dot_damage" then
+			return true
+		end
+	end
+
+	return false
+end
+
+-- name -> template for every DoT template in buff_templates (the live tables, not copies)
+function core.dot_templates(buff_templates)
+	local dots = {}
+
+	for name, template in pairs(buff_templates or {}) do
+		if type(name) == "string" and core.is_dot_template(name, template) then
+			dots[name] = template
+		end
+	end
+
+	return dots
+end
+
 function core.deep_equal(a, b)
 	if a == b then
 		return true

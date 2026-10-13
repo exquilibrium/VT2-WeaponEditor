@@ -1563,14 +1563,14 @@ local function draw_hand_profiles(hand, prefix)
 	Imgui.text(string.format("%s%s%s", prefix, hand.names.now, hand.weapon_mode and string.format(" (%s mode)", tostring(hand.weapon_mode)) or ""))
 
 	if hand.names.baseline ~= hand.names.now or hand.names.vanilla ~= hand.names.now then
-		text_colored(string.format("    %s profile %s, vanilla profile %s", label, tostring(hand.names.baseline or "-"), tostring(hand.names.vanilla or "-")), INFO_COLOR)
+		text_colored(string.format("    %s profile %s, official profile %s", label, tostring(hand.names.baseline or "-"), tostring(hand.names.vanilla or "-")), INFO_COLOR)
 	end
 end
 
 local function draw_grid(grid, options)
 	local label = breakpoints.editor.baseline_label()
 
-	text_colored(string.format("power %d, %s - cells: now | %s | vanilla (green/red: now vs %s)", grid.power_level, grid.difficulty_level, label, label), INFO_COLOR)
+	text_colored(string.format("power %d, %s - cells: now | %s | official (green/red: now vs %s)", grid.power_level, grid.difficulty_level, label, label), INFO_COLOR)
 
 	if grid.simulated then
 		text_colored(grid.simulated, BETTER_COLOR)

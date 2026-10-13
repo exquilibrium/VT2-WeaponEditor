@@ -6,7 +6,7 @@ local mod = get_mod("WeaponEditor")
 
 	Edit Weapons/DamageProfileTemplates values live in game, then export them as Lua to
 	paste into a balance mod's weapon change files. Every exported value carries a
-	"-- vanilla:" comment.
+	"-- official:" comment.
 
 	Works with any balance mod. A balance mod that registers itself (register_balance_mod,
 	see "Balance mod registration" below) gets the full feature set: its own damage formula in
@@ -63,11 +63,13 @@ local breakpoints = require("scripts/mods/WeaponEditor/we_breakpoints")
 -- are built with table.clone, so every action fires its own embedded copy of its
 -- projectile_info and nothing looks Projectiles up by name - those copies are edited (and
 -- exported) through the Weapons path instead.
+-- BuffTemplates: only its DoT templates (core.is_dot_template) are searchable and snapshotted.
 local SUPPORTED_ROOTS = {
 	Weapons = true,
 	DamageProfileTemplates = true,
 	ExplosionTemplates = true,
 	SpreadTemplates = true,
+	BuffTemplates = true,
 }
 
 local INPUT_SERVICE_NAME = "weapon_editor"
@@ -94,6 +96,8 @@ local function capture_tables()
 		PowerLevelTemplates = core.deep_copy(PowerLevelTemplates, seen),
 		ExplosionTemplates = core.deep_copy(ExplosionTemplates, seen),
 		SpreadTemplates = core.deep_copy(SpreadTemplates, seen),
+		-- Only the DoT templates: the rest of BuffTemplates is large and never edited here
+		BuffTemplates = core.deep_copy(core.dot_templates(BuffTemplates), seen),
 	}
 end
 
@@ -145,6 +149,8 @@ else
 		-- tables: balance mods built on the same base define their new profiles in NewDamageProfileTemplates
 		vanilla_tainted = not handed_over and next(rawget(_G, "NewDamageProfileTemplates") or {}) ~= nil,
 		mods_before = not handed_over and mods_loaded_before_editor() or {},
+		-- A balance mod's snapshot from before DoT templates were editable has none
+		vanilla_missing_dots = handed_over ~= nil and type(handed_over.tables) == "table" and handed_over.tables.BuffTemplates == nil,
 		baseline = nil,
 		edits = {},
 		cow = {},
@@ -406,7 +412,8 @@ end
 
 -- Weapon action fields holding their own copy of this explosion instead of the global
 -- (weapon templates are table.clone'd). The immediate blast uses that copy, so edits to
--- ExplosionTemplates[name] miss it until it's linked. Returns a list of key paths.
+-- ExplosionTemplates[name] miss it until it's linked. Returns a list of key paths. Walks
+-- every weapon's actions: per frame, use editor.embedded_explosion_copies_cached.
 function editor.embedded_explosion_copies(name)
 	local global = ExplosionTemplates[name]
 	local copies = {}
@@ -434,6 +441,26 @@ function editor.embedded_explosion_copies(name)
 	table.sort(copies, function (a, b)
 		return core.format_path(a) < core.format_path(b)
 	end)
+
+	return copies
+end
+
+-- explosion name -> copies, valid for one edit_generation (linking a copy is an edit)
+local explosion_copies_cache = {}
+local explosion_copies_generation = nil
+
+function editor.embedded_explosion_copies_cached(name)
+	if explosion_copies_generation ~= editor.edit_generation then
+		explosion_copies_cache = {}
+		explosion_copies_generation = editor.edit_generation
+	end
+
+	local copies = explosion_copies_cache[name]
+
+	if not copies then
+		copies = editor.embedded_explosion_copies(name)
+		explosion_copies_cache[name] = copies
+	end
 
 	return copies
 end
@@ -671,7 +698,11 @@ end
 -- leaf, "table" a table (stored as a copy), "removed" nothing, "ref" a global's path.
 local function write_change(keys, kind, payload)
 	if #keys < 3 or not SUPPORTED_ROOTS[keys[1]] then
-		return false, "only fields inside Weapons, DamageProfileTemplates, ExplosionTemplates and SpreadTemplates entries can be edited"
+		return false, "only fields inside Weapons, DamageProfileTemplates, ExplosionTemplates, SpreadTemplates and DoT template (BuffTemplates) entries can be edited"
+	end
+
+	if keys[1] == "BuffTemplates" and not core.is_dot_template(keys[2], BuffTemplates[keys[2]]) then
+		return false, "only DoT templates can be edited in BuffTemplates"
 	end
 
 	local current, ancestors = core.live_value(keys)
@@ -1510,9 +1541,14 @@ function editor.select_template(template_name)
 	end
 end
 
--- Shows a non-weapon entry (e.g. ExplosionTemplates.conflag) instead of a weapon template
+-- Shows a non-weapon entry (e.g. ExplosionTemplates.conflag, a DoT template) instead of a
+-- weapon template
 function editor.select_global(root, name)
 	local entries = SUPPORTED_ROOTS[root] and rawget(_G, root)
+
+	if root == "BuffTemplates" and not core.is_dot_template(name, entries and entries[name]) then
+		return
+	end
 
 	if entries and type(entries[name]) == "table" then
 		editor.selected_global = {
@@ -1712,7 +1748,7 @@ mod:command("we_reset_windows", "Weapon editor: move the editor and breakpoint w
 	open_window()
 end)
 
-mod:command("we_export", "Weapon editor: copy all edits as Lua (with vanilla comments) to the clipboard.", function ()
+mod:command("we_export", "Weapon editor: copy all edits as Lua (with official-value comments) to the clipboard.", function ()
 	editor.export()
 end)
 
@@ -1742,6 +1778,10 @@ mod:command("we_status", "Weapon editor: list current edits and what happened to
 		report("  %s = %s (%s %s)", path, core.describe_edit(edit), editor.baseline_label(), core.format_value(edit.baseline))
 	end
 end)
+
+if state.vanilla_missing_dots then
+	report("%s's vanilla snapshot has no DoT templates (BuffTemplates) - their official values show as nil. Update its editor support file (see README).", tostring(state.vanilla_source))
+end
 
 if state.vanilla_tainted then
 	report("Vanilla snapshot was taken after a balance mod already changed the tables (%s loaded first) - move Weapon Editor above it in the launcher, or let the balance mod take the snapshot (see README), then restart.", #state.mods_before > 0 and table.concat(state.mods_before, ", ") or "something")

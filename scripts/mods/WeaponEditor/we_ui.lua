@@ -15,6 +15,11 @@ local ui = {}
 
 local ITEM_WIDTH = 160
 local SEARCH_WIDTH = 280
+-- The results list starts under the search field and is at least this wide (wider with the
+-- window), so long template names fit
+local MIN_SEARCH_RESULTS_WIDTH = 420
+local SEARCH_RESULTS_RIGHT_MARGIN = 20
+local SEARCH_RESULT_ROWS = 12
 local MAX_SEARCH_RESULTS = 40
 local SEARCH_SOURCES = {
 	{
@@ -28,6 +33,10 @@ local SEARCH_SOURCES = {
 	{
 		root = "SpreadTemplates",
 		prefix = "[spread] ",
+	},
+	{
+		root = "BuffTemplates",
+		prefix = "[dot] ",
 	},
 }
 local EDITED_COLOR = { 255, 200, 80, 255 }
@@ -48,7 +57,18 @@ local LINKED_GLOBALS = {
 	default_spread_template = "SpreadTemplates",
 	spread_template_override = "SpreadTemplates",
 	spread_template = "SpreadTemplates",
+	-- Damage profiles name their DoT here; only DoT templates of BuffTemplates qualify
+	dot_template_name = "BuffTemplates",
 }
+
+-- Whether an entry of a linked/searchable global can be opened in the editor
+local function is_editable_entry(root, name, entry)
+	if root == "BuffTemplates" then
+		return core.is_dot_template(name, entry)
+	end
+
+	return type(entry) == "table"
+end
 
 local function build_dropdown(key)
 	local names = nil
@@ -57,7 +77,7 @@ local function build_dropdown(key)
 		names = {}
 
 		for name, entry in pairs(rawget(_G, LINKED_GLOBALS[key]) or {}) do
-			if type(entry) == "table" then
+			if type(name) == "string" and is_editable_entry(LINKED_GLOBALS[key], name, entry) then
 				names[#names + 1] = name
 			end
 		end
@@ -361,18 +381,59 @@ local function vanilla_value_for(editor, keys)
 	return core.snapshot_value(editor.state.vanilla, keys), nil
 end
 
-local function draw_edit_marker(editor, keys, path)
+-- "official" in the window means the vanilla snapshot (the game's own values). A balance mod
+-- profile compares against the official profile its attacks used, named in the label.
+local function official_label(keys, counterpart)
+	return counterpart and counterpart ~= keys[2] and ("official (" .. counterpart .. ")") or "official"
+end
+
+--[[
+	"official X" for a field the editor hasn't touched whose value (the balance mod's) differs from
+	official, or nil. A field the balance mod added shows "official (not set)" - but only inside a
+	table official has, so a table that's new as a whole doesn't flag every field in it.
+]]
+local function official_difference(editor, keys, live_value)
+	local official_value, counterpart = vanilla_value_for(editor, keys)
+
+	if official_value == live_value or type(official_value) == "table" then
+		return nil
+	end
+
+	if official_value == nil then
+		local parent_keys = {}
+
+		for i = 1, #keys - 1 do
+			parent_keys[i] = keys[i]
+		end
+
+		if #parent_keys < 2 or type((vanilla_value_for(editor, parent_keys))) ~= "table" then
+			return nil
+		end
+	end
+
+	return string.format("%s %s", official_label(keys, counterpart), official_value == nil and "(not set)" or core.format_value(official_value))
+end
+
+-- Next to a field: an edited one shows the balance mod's and the official value plus revert;
+-- an untouched one shows the official value when the balance mod changed it
+local function draw_edit_marker(editor, keys, path, live_value)
 	local edit = editor.state.edits[path]
 
 	if not edit then
+		local difference = official_difference(editor, keys, live_value)
+
+		if difference then
+			Imgui.same_line()
+			text_colored(difference, INFO_COLOR)
+		end
+
 		return
 	end
 
-	local vanilla_value, counterpart = vanilla_value_for(editor, keys)
-	local vanilla_label = counterpart and counterpart ~= keys[2] and ("vanilla (" .. counterpart .. ")") or "vanilla"
+	local official_value, counterpart = vanilla_value_for(editor, keys)
 
 	Imgui.same_line()
-	text_colored(string.format("%s %s | %s %s", editor.baseline_label(), core.format_value(edit.baseline), vanilla_label, core.format_value(vanilla_value)), EDITED_COLOR)
+	text_colored(string.format("%s %s | %s %s", editor.baseline_label(), core.format_value(edit.baseline), official_label(keys, counterpart), core.format_value(official_value)), EDITED_COLOR)
 	Imgui.same_line()
 
 	if Imgui.small_button("revert##" .. path) then
@@ -683,7 +744,7 @@ local function edit_table(editor, t, keys, skip_keys)
 			end
 
 			if value_type ~= "table" then
-				draw_edit_marker(editor, child_keys, path)
+				draw_edit_marker(editor, child_keys, path, value)
 				draw_structure_buttons(editor, t, keys, key, child_keys, path, parent_is_array)
 			end
 
@@ -695,11 +756,11 @@ local function edit_table(editor, t, keys, skip_keys)
 				end
 			end
 
-			-- Same for fields naming an explosion or spread template
+			-- Same for fields naming an explosion, spread or DoT template
 			local linked_root = value_type == "string" and LINKED_GLOBALS[key]
 			local linked_entries = linked_root and rawget(_G, linked_root)
 
-			if linked_entries and type(linked_entries[value]) == "table" then
+			if linked_entries and is_editable_entry(linked_root, value, linked_entries[value]) then
 				if Imgui.tree_node(linked_root .. "." .. value .. "##open" .. path) then
 					text_colored("Shared by everything using it - exports as " .. linked_root .. " lines", INFO_COLOR)
 					edit_table(editor, linked_entries[value], { linked_root, value })
@@ -817,9 +878,30 @@ local function sheet_cell(editor, root, root_keys, relative_keys)
 
 	Imgui.pop_item_width()
 
-	if editor.state.edits[path] then
+	-- Too narrow for the values themselves: a marker, with them on hover
+	local edit = editor.state.edits[path]
+	local hover_text = nil
+
+	if edit then
+		local official_value, counterpart = vanilla_value_for(editor, keys)
+
 		Imgui.same_line()
 		text_colored("*", EDITED_COLOR)
+
+		hover_text = string.format("%s %s | %s %s", editor.baseline_label(), core.format_value(edit.baseline), official_label(keys, counterpart), core.format_value(official_value))
+	elseif value_type ~= "table" then
+		hover_text = official_difference(editor, keys, value)
+
+		if hover_text then
+			Imgui.same_line()
+			text_colored("~", INFO_COLOR)
+		end
+	end
+
+	if hover_text and Imgui.is_item_hovered() then
+		Imgui.begin_tool_tip()
+		Imgui.text(hover_text)
+		Imgui.end_tool_tip()
 	end
 end
 
@@ -1059,7 +1141,7 @@ draw_profile = function (editor, profile_name, field_keys)
 	local profile_path = "DamageProfileTemplates." .. profile_name
 
 	if is_fork then
-		text_colored(string.format("Fork of %s - exports as a new %s block (vanilla: %s)", editor.state.forks[profile_name].source, block_global, counterpart or "none"), INFO_COLOR)
+		text_colored(string.format("Fork of %s - exports as a new %s block (official: %s)", editor.state.forks[profile_name].source, block_global, counterpart or "none"), INFO_COLOR)
 		Imgui.same_line()
 
 		if Imgui.small_button("delete fork##delete_fork" .. profile_path) then
@@ -1068,9 +1150,9 @@ draw_profile = function (editor, profile_name, field_keys)
 			return
 		end
 	elseif is_authored_profile then
-		text_colored(string.format("%s profile - exports as a whole %s block (vanilla: %s)", editor.baseline_label(), block_global, counterpart or "none"), INFO_COLOR)
+		text_colored(string.format("%s profile - exports as a whole %s block (official: %s)", editor.baseline_label(), block_global, counterpart or "none"), INFO_COLOR)
 	else
-		text_colored("Vanilla profile - shared presets are copied into it on first edit", INFO_COLOR)
+		text_colored("Official profile - shared presets are copied into it on first edit", INFO_COLOR)
 	end
 
 	if has_edit_under(editor, profile_path) then
@@ -1115,9 +1197,13 @@ local function draw_template_picker(editor)
 	end
 
 	Imgui.same_line()
+
+	-- Where the search field starts: the results list goes right below it
+	local search_x = Imgui.get_cursor_screen_pos()
+
 	Imgui.push_item_width(SEARCH_WIDTH)
 
-	s.filter = Imgui.input_text("Search weapons / explosions / spread##template_filter", s.filter or "")
+	s.filter = Imgui.input_text("Search weapons / explosions / spread / dots##template_filter", s.filter or "")
 
 	Imgui.pop_item_width()
 
@@ -1131,7 +1217,7 @@ local function draw_template_picker(editor)
 
 		for _, source in ipairs(SEARCH_SOURCES) do
 			for name, entry in pairs(rawget(_G, source.root) or {}) do
-				if type(entry) == "table" and type(name) == "string" and name:lower():find(needle, 1, true) then
+				if type(name) == "string" and name:lower():find(needle, 1, true) and is_editable_entry(source.root, name, entry) then
 					results[#results + 1] = {
 						label = source.prefix .. name,
 						root = source.root,
@@ -1159,8 +1245,21 @@ local function draw_template_picker(editor)
 		s.last_filter = s.filter
 	end
 
+	-- Line the list up with the search field, as wide as the window allows
+	local window_x = Imgui.get_window_pos()
+	local window_width = Imgui.get_window_size()
+	local _, cursor_y = Imgui.get_cursor_screen_pos()
+	local results_width = math.max(MIN_SEARCH_RESULTS_WIDTH, window_x + window_width - search_x - SEARCH_RESULTS_RIGHT_MARGIN)
+
+	Imgui.set_cursor_screen_pos(search_x, cursor_y)
+
 	if #s.results > 0 then
-		local picked = Imgui.list_box("##template_results", 0, s.result_labels, 8)
+		Imgui.push_item_width(results_width)
+
+		local picked = Imgui.list_box("##template_results", 0, s.result_labels, SEARCH_RESULT_ROWS)
+
+		Imgui.pop_item_width()
+
 		local result = picked and picked > 0 and s.results[picked]
 
 		if result then
@@ -1194,7 +1293,7 @@ local function draw_global_entry(editor, root, name)
 
 	if root == "ExplosionTemplates" then
 		-- table.clone'd weapon templates fire their own copy: global edits miss the immediate blast
-		for _, copy_keys in ipairs(editor.embedded_explosion_copies(name)) do
+		for _, copy_keys in ipairs(editor.embedded_explosion_copies_cached(name)) do
 			local copy_path = core.format_path(copy_keys)
 
 			text_colored("Own copy (immediate blast ignores edits here): " .. copy_path, WARNING_COLOR)
@@ -1206,6 +1305,22 @@ local function draw_global_entry(editor, root, name)
 		end
 	elseif root == "SpreadTemplates" then
 		text_colored("Weapons read their spread template live - edits apply immediately", INFO_COLOR)
+	elseif root == "BuffTemplates" then
+		text_colored("DoT template - edits apply to DoTs applied from now on. Tick damage comes from its damage_profile.", INFO_COLOR)
+
+		-- Copies the game builds from this one at load, used instead of it by some talents
+		local variants = {
+			{ lookup = rawget(_G, "BalefireBurnDotLookup"), who = "Necromancer (balefire)" },
+			{ lookup = rawget(_G, "InfiniteBurnDotLookup"), who = "Pyromancer with infinite burn" },
+		}
+
+		for _, variant in ipairs(variants) do
+			local variant_name = variant.lookup and variant.lookup[name]
+
+			if variant_name then
+				text_colored(string.format("%s uses its own copy, BuffTemplates.%s - edits here don't reach it", variant.who, variant_name), WARNING_COLOR)
+			end
+		end
 	end
 
 	edit_table(editor, entry, { root, name })
