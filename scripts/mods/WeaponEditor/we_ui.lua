@@ -2,7 +2,10 @@
 	Weapon editor: the Imgui window.
 
 	Every widget label ends in "##<full path>" so identically named fields in different
-	tables (attack/impact, target 1/target 2, ...) stay separate Imgui items.
+	tables (attack/impact, target 1/target 2, ...) stay separate Imgui items. Imgui hashes the
+	whole label for the ID, though, so a tree node or header whose text can change uses
+	"###<id>" instead (the ID is then only what follows): otherwise a changed label - a preset
+	copied on the first edit, an attack's new profile, a count - is a new node, and it folds.
 
 	Values are only written when the user actually changes a field - never echoed back
 	every frame - so browsing can't alter anything. Numbers are edited as text (see
@@ -10,6 +13,13 @@
 ]]
 
 local core = require("scripts/mods/WeaponEditor/we_core")
+local diff = require("scripts/mods/WeaponEditor/we_diff")
+
+local has_edit_under = diff.has_edit_under
+local official_to_show = diff.official_to_show
+local differs_from_official = diff.differs_from_official
+local sub_action_profiles = diff.sub_action_profiles
+local has_note_under = diff.has_note_under
 
 local ui = {}
 
@@ -42,6 +52,7 @@ local SEARCH_SOURCES = {
 local EDITED_COLOR = { 255, 200, 80, 255 }
 local WARNING_COLOR = { 255, 120, 90, 255 }
 local INFO_COLOR = { 150, 200, 255, 255 }
+local NOTE_COLOR = { 170, 170, 170, 255 }
 
 --[[
 	Dropdown lists for string fields with a known set of values
@@ -59,6 +70,13 @@ local LINKED_GLOBALS = {
 	spread_template = "SpreadTemplates",
 	-- Damage profiles name their DoT here; only DoT templates of BuffTemplates qualify
 	dot_template_name = "BuffTemplates",
+}
+
+-- DoT copies the game builds from the normal ones at load (global name -> lookup from the
+-- original's name to the copy's), used instead of them by some talents
+local DOT_VARIANTS = {
+	{ lookup = "BalefireBurnDotLookup", who = "Necromancer (balefire)" },
+	{ lookup = "InfiniteBurnDotLookup", who = "Pyromancer with infinite burn" },
 }
 
 -- Whether an entry of a linked/searchable global can be opened in the editor
@@ -238,14 +256,13 @@ end
 	from table structure is built once and reused until editor.edit_generation changes (every
 	edit and revert bumps it; structure only changes through edits). Tied to the editor table
 	too: this module survives a hot reload, the editor (and its generation counter) doesn't.
+	What changed (edits, official values, tree roll-ups) is cached the same way in we_diff.lua.
 ]]
 
 local cache_owner, cache_generation = nil, nil
-local edited_prefixes = {} -- path of every edit and every table above one -> true
 local removed_by_parent = {} -- parent path -> { { path, name } } for removed fields
 local field_entries_cache = {} -- table -> parent path -> sorted { key, keys, path }
 local profile_users_cache = {} -- profile name -> editor.profile_users result
-local sub_action_profiles_cache = {} -- sub-action table -> sorted profile names
 
 local function refresh_caches(editor)
 	if cache_owner == editor and cache_generation == editor.edit_generation then
@@ -253,19 +270,12 @@ local function refresh_caches(editor)
 	end
 
 	cache_owner, cache_generation = editor, editor.edit_generation
-	edited_prefixes, removed_by_parent, profile_users_cache = {}, {}, {}
+	removed_by_parent, profile_users_cache = {}, {}
 	field_entries_cache = setmetatable({}, {
-		__mode = "k",
-	})
-	sub_action_profiles_cache = setmetatable({}, {
 		__mode = "k",
 	})
 
 	for path, edit in pairs(editor.state.edits) do
-		for last_index = 2, #edit.keys do
-			edited_prefixes[core.format_path(edit.keys, nil, last_index)] = true
-		end
-
 		if edit.kind == "removed" then
 			local parent_path = core.format_path(edit.keys, nil, #edit.keys - 1)
 			local list = removed_by_parent[parent_path] or {}
@@ -277,13 +287,6 @@ local function refresh_caches(editor)
 			removed_by_parent[parent_path] = list
 		end
 	end
-end
-
--- True when `path` itself or anything below it is edited
-local function has_edit_under(editor, path)
-	refresh_caches(editor)
-
-	return edited_prefixes[path] == true
 end
 
 -- A table's fields in display order, with each child's key path and path string precomputed.
@@ -333,111 +336,170 @@ local function cached_profile_users(editor, profile_name)
 	return users
 end
 
--- A balance mod's new profile (mb_x) has no vanilla twin of the same name: compare against the
--- profile the actions now using it pointed at before the balance mod
-local function vanilla_counterpart(editor, profile_name)
-	local s = editor.ui_state
-
-	s.counterparts = s.counterparts or {}
-
-	if s.counterparts[profile_name] == nil then
-		local counterpart = false
-
-		if editor.state.vanilla.DamageProfileTemplates[profile_name] then
-			counterpart = profile_name
-		else
-			for _, user in ipairs(editor.profile_users(profile_name)) do
-				if type(user.vanilla_profile) == "string" and user.vanilla_profile ~= profile_name then
-					counterpart = user.vanilla_profile
-
-					break
-				end
-			end
-		end
-
-		s.counterparts[profile_name] = counterpart
+-- Markers after the item just drawn (a tree node, a heading), so changes show with the tree
+-- closed - same colors as the fields: a yellow "*" when something below is edited, a blue "~"
+-- when something below differs from official, a grey "n" when something below has a note
+local function draw_markers(edited, differs, noted)
+	if edited then
+		Imgui.same_line()
+		text_colored("*", EDITED_COLOR)
 	end
 
-	return s.counterparts[profile_name] or nil
-end
-
-local function vanilla_value_for(editor, keys)
-	if keys[1] == "DamageProfileTemplates" then
-		local counterpart = vanilla_counterpart(editor, keys[2])
-
-		if not counterpart then
-			return nil, nil
-		end
-
-		local counterpart_keys = { "DamageProfileTemplates", counterpart }
-
-		for i = 3, #keys do
-			counterpart_keys[#counterpart_keys + 1] = keys[i]
-		end
-
-		return core.snapshot_value(editor.state.vanilla, counterpart_keys), counterpart
+	if differs then
+		Imgui.same_line()
+		text_colored("~", INFO_COLOR)
 	end
 
-	return core.snapshot_value(editor.state.vanilla, keys), nil
+	if noted then
+		Imgui.same_line()
+		text_colored("n", NOTE_COLOR)
+	end
 end
 
--- "official" in the window means the vanilla snapshot (the game's own values). A balance mod
--- profile compares against the official profile its attacks used, named in the label.
-local function official_label(keys, counterpart)
-	return counterpart and counterpart ~= keys[2] and ("official (" .. counterpart .. ")") or "official"
+-- The markers for the table at keys. edited: overrides the edit check (nil: anything under path)
+local function draw_tree_markers(editor, keys, path, edited)
+	path = path or core.format_path(keys)
+
+	if edited == nil then
+		edited = has_edit_under(editor, path)
+	end
+
+	draw_markers(edited, differs_from_official(editor, keys, path), has_note_under(editor, path))
 end
 
 --[[
-	"official X" for a field the editor hasn't touched whose value (the balance mod's) differs from
-	official, or nil. A field the balance mod added shows "official (not set)" - but only inside a
-	table official has, so a table that's new as a whole doesn't flag every field in it.
+	Notes: why an edit was made (editor.set_note), shown in grey under what they belong to. Entry
+	headings, edited fields and fields with a note have a "note" button (the attack sheet a
+	compact "n"); "note mode" adds it to every other editable field too. While open, the note is
+	a text box with save/cancel/delete. Saving goes through the button, which also takes focus
+	off the text box - what commits the typed text.
 ]]
-local function official_difference(editor, keys, live_value)
-	local official_value, counterpart = vanilla_value_for(editor, keys)
 
-	if official_value == live_value or type(official_value) == "table" then
-		return nil
-	end
-
-	if official_value == nil then
-		local parent_keys = {}
-
-		for i = 1, #keys - 1 do
-			parent_keys[i] = keys[i]
-		end
-
-		if #parent_keys < 2 or type((vanilla_value_for(editor, parent_keys))) ~= "table" then
-			return nil
-		end
-	end
-
-	return string.format("%s %s", official_label(keys, counterpart), official_value == nil and "(not set)" or core.format_value(official_value))
+-- Whether a field gets a note button: edited, already noted, or note mode is on
+local function field_takes_note(editor, path)
+	return editor.state.edits[path] ~= nil or editor.state.notes[path] ~= nil or editor.ui_state.note_mode == true
 end
 
--- Next to a field: an edited one shows the balance mod's and the official value plus revert;
--- an untouched one shows the official value when the balance mod changed it
-local function draw_edit_marker(editor, keys, path, live_value)
-	local edit = editor.state.edits[path]
+-- "note" / "edit note" on the line just drawn (own_line: on a line of its own), opening the
+-- note's text box (draw_note_body, same where). compact: "n" / "n*" with the note on hover, for
+-- the attack sheet's narrow cells.
+local function draw_note_button(editor, path, where, own_line, compact)
+	local s = editor.ui_state
+	local note = editor.state.notes[path]
+	local draft_key = where .. path
+	local label
 
-	if not edit then
-		local difference = official_difference(editor, keys, live_value)
+	if compact then
+		label = note and "n*" or "n"
+	else
+		label = note and "edit note" or "note"
+	end
 
-		if difference then
+	s.note_drafts = s.note_drafts or {}
+
+	if not own_line then
+		Imgui.same_line()
+	end
+
+	if Imgui.small_button(label .. "##note_button" .. where .. path) then
+		if s.note_drafts[draft_key] then
+			s.note_drafts[draft_key] = nil
+		else
+			s.note_drafts[draft_key] = note and note.text or ""
+		end
+	end
+
+	if compact and Imgui.is_item_hovered() then
+		Imgui.begin_tool_tip()
+		Imgui.text(note and note.text or "add a note")
+		Imgui.end_tool_tip()
+	end
+end
+
+-- Whether the note at path has its text box open in `where`
+local function note_draft_open(editor, path, where)
+	local drafts = editor.ui_state.note_drafts
+
+	return drafts ~= nil and drafts[where .. path] ~= nil
+end
+
+-- Under the line: the open text box, or the saved note
+local function draw_note_body(editor, path, where)
+	local s = editor.ui_state
+	local draft_key = where .. path
+	local draft = s.note_drafts and s.note_drafts[draft_key]
+	local note = editor.state.notes[path]
+
+	if draft then
+		s.note_drafts[draft_key] = Imgui.input_text_multiline("##note_text" .. where .. path, draft)
+
+		if Imgui.small_button("save note##note_save" .. where .. path) then
+			editor.set_note(path, s.note_drafts[draft_key])
+			s.note_drafts[draft_key] = nil
+		end
+
+		Imgui.same_line()
+
+		if Imgui.small_button("cancel##note_cancel" .. where .. path) then
+			s.note_drafts[draft_key] = nil
+		end
+
+		if note then
 			Imgui.same_line()
-			text_colored(difference, INFO_COLOR)
+
+			if Imgui.small_button("delete note##note_delete" .. where .. path) then
+				editor.set_note(path, nil)
+				s.note_drafts[draft_key] = nil
+			end
 		end
 
 		return
 	end
 
-	local official_value, counterpart = vanilla_value_for(editor, keys)
+	if not note then
+		return
+	end
 
-	Imgui.same_line()
-	text_colored(string.format("%s %s | %s %s", editor.baseline_label(), core.format_value(edit.baseline), official_label(keys, counterpart), core.format_value(official_value)), EDITED_COLOR)
-	Imgui.same_line()
+	for line in note.text:gmatch("[^\n]+") do
+		text_colored("    note: " .. line, NOTE_COLOR)
+	end
+end
 
-	if Imgui.small_button("revert##" .. path) then
-		editor.revert_edit(path)
+-- A value as shown next to a field; nil (not set) as none_text
+local function shown_value(value, none_text)
+	return value == nil and none_text or core.format_value(value)
+end
+
+--[[
+	Next to a field, the same colors as the attack sheet: the balance mod's value in yellow (once
+	edited, with revert), the official value in blue (once edited, or wherever the balance mod
+	changed it), then the note button. A damage profile field's official value is the official
+	profile's name.
+]]
+local function draw_edit_marker(editor, keys, path, live_value)
+	local edit = editor.state.edits[path]
+	local show_official, official_value = official_to_show(editor, keys, live_value, edit)
+
+	if edit then
+		Imgui.same_line()
+		text_colored(string.format("%s %s", editor.baseline_label(), shown_value(edit.baseline, "(not set)")), EDITED_COLOR)
+	end
+
+	if show_official then
+		Imgui.same_line()
+		text_colored("official " .. shown_value(official_value, "(not set)"), INFO_COLOR)
+	end
+
+	if edit then
+		Imgui.same_line()
+
+		if Imgui.small_button("revert##" .. path) then
+			editor.revert_edit(path)
+		end
+	end
+
+	if field_takes_note(editor, path) then
+		draw_note_button(editor, path, "field")
 	end
 end
 
@@ -699,11 +761,10 @@ local function edit_table(editor, t, keys, skip_keys)
 					label = label .. "  (own copy of ExplosionTemplates." .. link_name .. ")"
 				end
 
-				if has_edit_under(editor, path) or has_edit_under(editor, core.format_path(node_keys)) then
-					label = label .. "  *"
-				end
+				local node_path = core.format_path(node_keys)
+				local open = Imgui.tree_node(label .. "###" .. path)
 
-				local open = Imgui.tree_node(label .. "##" .. path)
+				draw_tree_markers(editor, node_keys, node_path, has_edit_under(editor, path) or has_edit_under(editor, node_path))
 
 				if link_state == "copy" then
 					Imgui.same_line()
@@ -721,9 +782,12 @@ local function edit_table(editor, t, keys, skip_keys)
 					if Imgui.small_button("revert##table" .. path) then
 						editor.revert_edit(path)
 					end
+
+					draw_note_button(editor, path, "field")
 				end
 
 				draw_structure_buttons(editor, t, keys, key, child_keys, path, parent_is_array)
+				draw_note_body(editor, path, "field")
 
 				if open then
 					edit_table(editor, core.live_value(node_keys) or value, node_keys)
@@ -746,11 +810,16 @@ local function edit_table(editor, t, keys, skip_keys)
 			if value_type ~= "table" then
 				draw_edit_marker(editor, child_keys, path, value)
 				draw_structure_buttons(editor, t, keys, key, child_keys, path, parent_is_array)
+				draw_note_body(editor, path, "field")
 			end
 
 			-- Fields naming a damage profile open that profile right below them
 			if value_type == "string" and name:find("damage_profile", 1, true) and DamageProfileTemplates[value] then
-				if Imgui.tree_node("profile " .. value .. "##open" .. path) then
+				local open = Imgui.tree_node("profile " .. value .. "###open" .. path)
+
+				draw_tree_markers(editor, { "DamageProfileTemplates", value })
+
+				if open then
 					draw_profile(editor, value, child_keys)
 					Imgui.tree_pop()
 				end
@@ -761,7 +830,11 @@ local function edit_table(editor, t, keys, skip_keys)
 			local linked_entries = linked_root and rawget(_G, linked_root)
 
 			if linked_entries and is_editable_entry(linked_root, value, linked_entries[value]) then
-				if Imgui.tree_node(linked_root .. "." .. value .. "##open" .. path) then
+				local open = Imgui.tree_node(linked_root .. "." .. value .. "###open" .. path)
+
+				draw_tree_markers(editor, { linked_root, value })
+
+				if open then
 					text_colored("Shared by everything using it - exports as " .. linked_root .. " lines", INFO_COLOR)
 					edit_table(editor, linked_entries[value], { linked_root, value })
 					Imgui.tree_pop()
@@ -779,6 +852,8 @@ end
 ]]
 
 local SHEET_CELL_WIDTH = 85
+-- Sheet cells whose note text box is open, drawn under the sheet (draw_open_sheet_notes)
+local open_sheet_notes = {}
 local ARMOR_NAMES = { "infantry", "armored", "monster", "player", "berserker", "super armor" }
 local SHEET_TOP_FIELDS = { "charge_value", "melee_boost_override", "shield_break", "no_stagger_damage_reduction", "no_stagger_damage_reduction_ranged" }
 local SHEET_TARGET_ROWS = {
@@ -878,30 +953,67 @@ local function sheet_cell(editor, root, root_keys, relative_keys)
 
 	Imgui.pop_item_width()
 
-	-- Too narrow for the values themselves: a marker, with them on hover
+	-- After the cell, colored like the all fields view: once edited, the balance mod's value in
+	-- yellow - a button that reverts to it, as the cell has no room for a "revert" - and the
+	-- official value in blue; otherwise the official value where the balance mod changed it. The
+	-- column clips long values; hovering shows them in full.
 	local edit = editor.state.edits[path]
-	local hover_text = nil
+	local show_official, official_value = false, nil
+
+	if value_type ~= "table" then
+		show_official, official_value = official_to_show(editor, keys, value, edit)
+	end
 
 	if edit then
-		local official_value, counterpart = vanilla_value_for(editor, keys)
-
 		Imgui.same_line()
-		text_colored("*", EDITED_COLOR)
+		Imgui.push_style_color(Imgui.COLOR_TEXT, EDITED_COLOR[1], EDITED_COLOR[2], EDITED_COLOR[3], EDITED_COLOR[4])
 
-		hover_text = string.format("%s %s | %s %s", editor.baseline_label(), core.format_value(edit.baseline), official_label(keys, counterpart), core.format_value(official_value))
-	elseif value_type ~= "table" then
-		hover_text = official_difference(editor, keys, value)
+		local revert = Imgui.small_button(shown_value(edit.baseline, "(none)") .. "##sheet_revert" .. path)
 
-		if hover_text then
-			Imgui.same_line()
-			text_colored("~", INFO_COLOR)
+		Imgui.pop_style_color(1)
+
+		if Imgui.is_item_hovered() then
+			Imgui.begin_tool_tip()
+			Imgui.text(string.format("%s %s | official %s - click to revert to %s", editor.baseline_label(), shown_value(edit.baseline, "(not set)"), shown_value(official_value, "(not set)"), editor.baseline_label()))
+			Imgui.end_tool_tip()
+		end
+
+		if revert then
+			editor.revert_edit(path)
 		end
 	end
 
-	if hover_text and Imgui.is_item_hovered() then
-		Imgui.begin_tool_tip()
-		Imgui.text(hover_text)
-		Imgui.end_tool_tip()
+	if show_official then
+		Imgui.same_line()
+		text_colored(shown_value(official_value, "(none)"), INFO_COLOR)
+
+		if Imgui.is_item_hovered() then
+			Imgui.begin_tool_tip()
+			Imgui.text("official " .. shown_value(official_value, "(not set)"))
+			Imgui.end_tool_tip()
+		end
+	end
+
+	-- Edited or noted cells (any cell with a value in note mode) take a note; its text box opens
+	-- below the sheet
+	if (value ~= nil or edit) and field_takes_note(editor, path) then
+		draw_note_button(editor, path, "sheet", false, true)
+
+		if note_draft_open(editor, path, "sheet") then
+			open_sheet_notes[#open_sheet_notes + 1] = {
+				path = path,
+				label = core.format_relative(keys, 3),
+			}
+		end
+	end
+end
+
+-- The sheet cells' open note text boxes, under the sheet (filled by sheet_cell while drawing)
+local function draw_open_sheet_notes(editor)
+	for _, entry in ipairs(open_sheet_notes) do
+		Imgui.separator()
+		text_colored("note on " .. entry.label, NOTE_COLOR)
+		draw_note_body(editor, entry.path, "sheet")
 	end
 end
 
@@ -940,6 +1052,8 @@ local function armor_rows(editor, profile, profile_keys, columns, kind)
 end
 
 local function draw_attack_sheet(editor, profile_name)
+	open_sheet_notes = {}
+
 	local profile = DamageProfileTemplates[profile_name]
 	local profile_keys = { "DamageProfileTemplates", profile_name }
 
@@ -1067,6 +1181,8 @@ local function draw_attack_sheet(editor, profile_name)
 
 		Imgui.columns(1)
 	end
+
+	draw_open_sheet_notes(editor)
 end
 
 --[[
@@ -1137,11 +1253,10 @@ draw_profile = function (editor, profile_name, field_keys)
 	local block_global = editor.host.authored_profiles_global or "DamageProfileTemplates"
 	local is_authored_profile = authored_profiles ~= nil and authored_profiles[profile_name] ~= nil
 	local is_fork = editor.state.forks[profile_name] ~= nil
-	local counterpart = vanilla_counterpart(editor, profile_name)
 	local profile_path = "DamageProfileTemplates." .. profile_name
 
 	if is_fork then
-		text_colored(string.format("Fork of %s - exports as a new %s block (official: %s)", editor.state.forks[profile_name].source, block_global, counterpart or "none"), INFO_COLOR)
+		text_colored(string.format("Fork of %s - exports as a new %s block", editor.state.forks[profile_name].source, block_global), INFO_COLOR)
 		Imgui.same_line()
 
 		if Imgui.small_button("delete fork##delete_fork" .. profile_path) then
@@ -1150,18 +1265,23 @@ draw_profile = function (editor, profile_name, field_keys)
 			return
 		end
 	elseif is_authored_profile then
-		text_colored(string.format("%s profile - exports as a whole %s block (official: %s)", editor.baseline_label(), block_global, counterpart or "none"), INFO_COLOR)
+		text_colored(string.format("%s profile - exports as a whole %s block", editor.baseline_label(), block_global), INFO_COLOR)
 	else
 		text_colored("Official profile - shared presets are copied into it on first edit", INFO_COLOR)
 	end
 
-	if has_edit_under(editor, profile_path) then
+	local profile_edited = has_edit_under(editor, profile_path)
+
+	if profile_edited then
 		Imgui.same_line()
 
 		if Imgui.small_button("revert profile##" .. profile_path) then
 			editor.revert_profile(profile_name)
 		end
 	end
+
+	draw_note_button(editor, profile_path, "heading")
+	draw_note_body(editor, profile_path, "heading")
 
 	if field_keys and Imgui.tree_node("fork into a new " .. editor.host.profile_prefix .. " profile##fork" .. core.format_path(field_keys)) then
 		draw_fork_controls(editor, profile_name, field_keys)
@@ -1173,7 +1293,11 @@ draw_profile = function (editor, profile_name, field_keys)
 		Imgui.tree_pop()
 	end
 
-	if Imgui.tree_node("all fields##all" .. profile_path) then
+	local all_fields_open = Imgui.tree_node("all fields##all" .. profile_path)
+
+	draw_tree_markers(editor, { "DamageProfileTemplates", profile_name })
+
+	if all_fields_open then
 		edit_table(editor, DamageProfileTemplates[profile_name], { "DamageProfileTemplates", profile_name })
 		Imgui.tree_pop()
 	end
@@ -1282,14 +1406,20 @@ local function draw_global_entry(editor, root, name)
 	local entry_path = root .. "." .. name
 
 	Imgui.text(entry_path)
+	draw_tree_markers(editor, { root, name })
 
-	if has_edit_under(editor, entry_path) then
+	local entry_edited = has_edit_under(editor, entry_path)
+
+	if entry_edited then
 		Imgui.same_line()
 
 		if Imgui.small_button("revert##revert_entry") then
 			editor.revert_entry(root, name)
 		end
 	end
+
+	draw_note_button(editor, entry_path, "heading")
+	draw_note_body(editor, entry_path, "heading")
 
 	if root == "ExplosionTemplates" then
 		-- table.clone'd weapon templates fire their own copy: global edits miss the immediate blast
@@ -1308,14 +1438,9 @@ local function draw_global_entry(editor, root, name)
 	elseif root == "BuffTemplates" then
 		text_colored("DoT template - edits apply to DoTs applied from now on. Tick damage comes from its damage_profile.", INFO_COLOR)
 
-		-- Copies the game builds from this one at load, used instead of it by some talents
-		local variants = {
-			{ lookup = rawget(_G, "BalefireBurnDotLookup"), who = "Necromancer (balefire)" },
-			{ lookup = rawget(_G, "InfiniteBurnDotLookup"), who = "Pyromancer with infinite burn" },
-		}
-
-		for _, variant in ipairs(variants) do
-			local variant_name = variant.lookup and variant.lookup[name]
+		for _, variant in ipairs(DOT_VARIANTS) do
+			local lookup = rawget(_G, variant.lookup)
+			local variant_name = lookup and lookup[name]
 
 			if variant_name then
 				text_colored(string.format("%s uses its own copy, BuffTemplates.%s - edits here don't reach it", variant.who, variant_name), WARNING_COLOR)
@@ -1326,47 +1451,27 @@ local function draw_global_entry(editor, root, name)
 	edit_table(editor, entry, { root, name })
 end
 
--- Damage profile names a sub-action uses, for its tree label (cached: drawn every frame)
-local function sub_action_profiles(editor, sub_action)
-	refresh_caches(editor)
-
-	if sub_action_profiles_cache[sub_action] then
-		return sub_action_profiles_cache[sub_action]
-	end
-
-	local names = {}
-
-	local function scan(t, depth)
-		for k, v in pairs(t) do
-			if type(k) == "string" and type(v) == "string" and k:find("damage_profile", 1, true) then
-				names[#names + 1] = v
-			elseif type(v) == "table" and depth < 2 and not core.EXCLUDED_KEYS[k] then
-				scan(v, depth + 1)
-			end
-		end
-	end
-
-	scan(sub_action, 1)
-	table.sort(names)
-
-	sub_action_profiles_cache[sub_action] = names
-
-	return names
-end
-
 local function draw_template(editor, template_name)
 	local template = Weapons[template_name]
 	local template_keys = { "Weapons", template_name }
 
-	Imgui.text("Template: " .. template_name)
+	local template_path = core.format_path(template_keys)
+	local template_edited, template_differs, template_noted = diff.template_flags(editor, template_keys, template)
 
-	if has_edit_under(editor, "Weapons." .. template_name) then
+	Imgui.text("Template: " .. template_name)
+	draw_markers(template_edited, template_differs, template_noted)
+
+	if has_edit_under(editor, template_path) then
 		Imgui.same_line()
 
 		if Imgui.small_button("revert weapon##revert_template") then
 			editor.revert_template(template_name)
 		end
 	end
+
+	-- The weapon's note (edited: anything in it, its damage profiles included)
+	draw_note_button(editor, template_path, "heading")
+	draw_note_body(editor, template_path, "heading")
 
 	if editor.reequip_needed[template_name] then
 		text_colored("Changed fields that are only read on wield/spawn (buffs, ammo) - wield this weapon and re-equip", WARNING_COLOR)
@@ -1378,14 +1483,26 @@ local function draw_template(editor, template_name)
 	end
 
 	local actions = template.actions
+	local actions_open = type(actions) == "table" and Imgui.tree_node("actions##" .. template_name, true)
 
-	if type(actions) == "table" and Imgui.tree_node("actions##" .. template_name, true) then
+	if type(actions) == "table" then
+		draw_markers(diff.actions_flags(editor, template_keys, actions))
+	end
+
+	if actions_open then
 		for _, action_name in ipairs(core.sorted_keys(actions)) do
 			local action = actions[action_name]
 			local action_keys = { "Weapons", template_name, "actions", action_name }
 			local action_path = core.format_path(action_keys)
+			local action_open = false
 
-			if type(action) == "table" and Imgui.tree_node(action_name .. (has_edit_under(editor, action_path) and "  *" or "") .. "##" .. action_path) then
+			if type(action) == "table" then
+				action_open = Imgui.tree_node(action_name .. "##" .. action_path)
+
+				draw_markers(diff.action_flags(editor, action_keys, action_path, action))
+			end
+
+			if action_open then
 				for _, sub_action_name in ipairs(core.sorted_keys(action)) do
 					local sub_action = action[sub_action_name]
 
@@ -1399,11 +1516,12 @@ local function draw_template(editor, template_name)
 							label = label .. "  [" .. table.concat(profiles, ", ") .. "]"
 						end
 
-						if has_edit_under(editor, sub_path) then
-							label = label .. "  *"
-						end
+						local sub_open = Imgui.tree_node(label .. "###" .. sub_path)
+						local sub_edited, sub_differs, sub_noted = diff.sub_action_flags(editor, sub_keys, sub_path, sub_action)
 
-						if Imgui.tree_node(label .. "##" .. sub_path) then
+						draw_markers(sub_edited, sub_differs, sub_noted)
+
+						if sub_open then
 							if #profiles > 0 then
 								if Imgui.small_button("breakpoints##bp" .. sub_path) then
 									editor.show_breakpoints(sub_keys)
@@ -1415,6 +1533,10 @@ local function draw_template(editor, template_name)
 									editor.add_to_combo(sub_keys)
 								end
 							end
+
+							-- The attack's note, next to its buttons (edited: its damage profiles count)
+							draw_note_button(editor, sub_path, "heading", #profiles == 0)
+							draw_note_body(editor, sub_path, "heading")
 
 							local others = editor.weapon_sharing(sub_action, template_name)
 
@@ -1435,7 +1557,11 @@ local function draw_template(editor, template_name)
 		Imgui.tree_pop()
 	end
 
-	if Imgui.tree_node("other template fields##" .. template_name) then
+	local other_open = Imgui.tree_node("other template fields##" .. template_name)
+
+	draw_markers(diff.other_fields_flags(editor, template_keys, template))
+
+	if other_open then
 		edit_table(editor, template, template_keys, {
 			actions = true,
 		})
@@ -1453,7 +1579,7 @@ local function draw_edit_list(editor)
 
 	table.sort(paths)
 
-	if Imgui.collapsing_header(string.format("All edits (%d)##edit_list", #paths), false) then
+	if Imgui.collapsing_header(string.format("All edits (%d)###edit_list", #paths), false) then
 		for _, path in ipairs(paths) do
 			local edit = edits[path]
 
@@ -1461,8 +1587,31 @@ local function draw_edit_list(editor)
 				editor.revert_edit(path)
 			end
 
+			-- Same note (and text box) as next to the field itself; up front, since the paths
+			-- are long
+			draw_note_button(editor, path, "list")
+
 			Imgui.same_line()
 			Imgui.text(string.format("%s = %s (%s %s)", path, core.describe_edit(edit), editor.baseline_label(), type(edit.baseline) == "table" and "<table>" or core.format_value(edit.baseline)))
+			draw_note_body(editor, path, "list")
+		end
+	end
+
+	-- Notes whose edit landed in the files or was reverted: still in the patch-note draft until
+	-- deleted here
+	local orphaned = editor.notes_without_edits()
+
+	if #orphaned > 0 and Imgui.collapsing_header(string.format("Notes without edits (%d)###orphaned_notes", #orphaned), false) then
+		text_colored("No pending edit: it landed in the files, was reverted, or the field was never edited. They stay in the patch-note draft until deleted.", INFO_COLOR)
+
+		for _, path in ipairs(orphaned) do
+			if Imgui.small_button("delete##orphaned_note" .. path) then
+				editor.set_note(path, nil)
+			end
+
+			Imgui.same_line()
+			Imgui.text(path)
+			draw_note_body(editor, path, "orphan")
 		end
 	end
 end
@@ -1471,6 +1620,10 @@ local function draw_body(editor)
 	if Imgui.begin_menu_bar() then
 		if Imgui.menu_item("Export to clipboard") then
 			editor.export()
+		end
+
+		if Imgui.menu_item("Export patch notes") then
+			editor.export_patch_notes()
 		end
 
 		if Imgui.menu_item("Breakpoints") then
@@ -1492,6 +1645,10 @@ local function draw_body(editor)
 	Imgui.same_line()
 
 	editor.ui_state.structure_mode = Imgui.checkbox("structure mode (add/remove fields and entries)##structure_mode", editor.ui_state.structure_mode or false)
+
+	Imgui.same_line()
+
+	editor.ui_state.note_mode = Imgui.checkbox("note mode (notes on unedited fields)##note_mode", editor.ui_state.note_mode or false)
 
 	Imgui.push_item_width(ITEM_WIDTH)
 

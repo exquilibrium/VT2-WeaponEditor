@@ -28,10 +28,12 @@ local mod = get_mod("WeaponEditor")
 		fork                 copy a profile under a new name (the balance mod's prefix) and point this
 		                     attack (or all attacks of the weapon using it) at it - exports as a new block
 		breakpoints          button on any attack (or /we_breakpoints): hits-to-kill grid comparing
-		                     now / balance mod / vanilla, plus a hit log checking predictions against real hits.
+		                     now / balance mod / official, plus a hit log checking predictions against real hits.
 		                     Its "stagger" sheet shows the stagger tier each hit causes instead
 		+ combo              button next to it: adds the attack to a combo the grid can show instead
 		                     (attacks of the combo, repeated in order, needed to kill)
+		note                 next to an edited field or entry heading: why the edit was made. Prints
+		                     as "-- note:" in the export; /we_export_notes drafts patch notes from them
 		/we_export            copies the export to the clipboard (and the console log)
 		paste, rebuild, restart
 		                     on launch, edits that are now in the files are dropped automatically,
@@ -153,6 +155,8 @@ else
 		vanilla_missing_dots = handed_over ~= nil and type(handed_over.tables) == "table" and handed_over.tables.BuffTemplates == nil,
 		baseline = nil,
 		edits = {},
+		-- path -> { text, from }: why an edit was made (see editor.set_note)
+		notes = {},
 		cow = {},
 		forks = {},
 		needs_reapply = false,
@@ -161,6 +165,9 @@ else
 	rawset(_G, STATE_GLOBAL, state)
 	rawset(_G, VANILLA_SNAPSHOT_GLOBAL, nil)
 end
+
+-- A state kept through a hot reload from before notes existed
+state.notes = state.notes or {}
 
 --[[
 	Balance mod registration. A balance mod calls, from its on_all_mods_loaded:
@@ -223,6 +230,8 @@ editor = {
 	ui_state = {},
 	-- Bumped on every edit/revert so cached breakpoint grids know to recompute
 	edit_generation = 0,
+	-- Bumped when a note is written or deleted (the window's note markers)
+	notes_generation = 0,
 	breakpoints_open = false,
 	breakpoint_target = nil, -- keys of the sub-action shown in the breakpoint window
 	-- Breakpoint combo steps in order: { keys = sub-action keys, hit_zone_index, stagger_index,
@@ -235,9 +244,9 @@ editor = {
 	pending_window_reset = {},
 }
 
--- The breakpoint module predicts damage outside of any window draw (hit log), so it keeps
--- its own reference for the balance mod's damage formula
-breakpoints.editor = editor
+-- The breakpoint and prediction modules predict damage outside of any window draw (hit log), so
+-- they keep their own reference for the balance mod's damage formula
+breakpoints.set_editor(editor)
 
 -- A fork was created or deleted: cached profile lists are stale
 function editor.on_profiles_changed()
@@ -518,22 +527,17 @@ end
 -- nothing.
 local SAVE_DELAY = 1
 local edits_dirty_since = nil
-local last_saved_text = nil -- what the setting currently holds
+local last_saved_texts = {} -- setting kind ("edits", "notes") -> what the setting currently holds
 
 local function main_time()
 	return Managers.time and Managers.time:time("main") or 0
 end
 
-local function flush_saved_edits()
-	if not edits_dirty_since then
-		return
-	end
-
-	edits_dirty_since = nil
-
+-- Writes one per-line setting, only when its text changed. encode(path, entry) -> line.
+local function write_lines_setting(kind, entries, encode)
 	local paths = {}
 
-	for path in pairs(state.edits) do
+	for path in pairs(entries) do
 		paths[#paths + 1] = path
 	end
 
@@ -542,24 +546,148 @@ local function flush_saved_edits()
 	local lines = {}
 
 	for _, path in ipairs(paths) do
-		lines[#lines + 1] = path .. "\t" .. core.encode_edit(state.edits[path])
+		lines[#lines + 1] = encode(path, entries[path])
 	end
 
 	local text = table.concat(lines, "\n")
 
-	if last_saved_text == nil then
-		last_saved_text = mod:get(settings_key("edits")) or ""
+	if last_saved_texts[kind] == nil then
+		last_saved_texts[kind] = mod:get(settings_key(kind)) or ""
 	end
 
-	if text ~= last_saved_text then
-		mod:set(settings_key("edits"), text)
+	if text ~= last_saved_texts[kind] then
+		mod:set(settings_key(kind), text)
 
-		last_saved_text = text
+		last_saved_texts[kind] = text
 	end
+end
+
+-- Edits and notes are saved together
+local function flush_saved_edits()
+	if not edits_dirty_since then
+		return
+	end
+
+	edits_dirty_since = nil
+
+	write_lines_setting("edits", state.edits, function (path, edit)
+		return path .. "\t" .. core.encode_edit(edit)
+	end)
+	write_lines_setting("notes", state.notes, core.encode_note)
 end
 
 local function save_edits()
 	edits_dirty_since = edits_dirty_since or main_time()
+end
+
+--[[
+	Notes: why an edit was made, for the export's comments and the patch-note draft (see
+	export.patch_notes). A note sits on an edited field ("field note") or on an entry heading -
+	weapon, sub-action, profile, explosion/spread/DoT entry ("entry note"). Notes live apart from
+	edits: reverting keeps them, and so does an edit landing in the files at launch - they go
+	only when deleted.
+]]
+
+-- Writes the note at path; empty text (or nil) deletes it. A field note remembers the balance
+-- mod's value its edit started from, the first time it's written.
+function editor.set_note(path, text)
+	text = type(text) == "string" and text:gsub("^%s+", ""):gsub("%s+$", "") or ""
+
+	local old = state.notes[path]
+
+	if text == "" then
+		state.notes[path] = nil
+	else
+		local edit = state.edits[path]
+		local from = old and old.from
+
+		if not from and edit then
+			from = core.format_value(edit.baseline)
+		end
+
+		state.notes[path] = {
+			text = text,
+			from = from,
+		}
+	end
+
+	editor.notes_generation = editor.notes_generation + 1
+
+	save_edits()
+end
+
+local function has_edit_under(path)
+	for edit_path in pairs(state.edits) do
+		if core.path_is_under(edit_path, path) then
+			return true
+		end
+	end
+
+	return false
+end
+
+-- Damage profile names the damage_profile* fields inside t name (a weapon, an action, a sub-action)
+local function profiles_named_in(t, names, depth)
+	for k, v in pairs(t) do
+		if type(k) == "string" and type(v) == "string" and k:find("damage_profile", 1, true) then
+			names[v] = true
+		elseif type(v) == "table" and depth < 5 and not core.EXCLUDED_KEYS[k] then
+			profiles_named_in(v, names, depth + 1)
+		end
+	end
+
+	return names
+end
+
+-- Whether the note at path still has an edit to describe: at or below its path or, for a note
+-- inside a weapon, in a damage profile it uses (the weapon tree's "*" counts those too)
+local function note_has_edits(path)
+	if has_edit_under(path) then
+		return true
+	end
+
+	local keys = core.parse_path(path)
+	local live = keys[1] == "Weapons" and core.live_value(keys)
+
+	if type(live) == "table" then
+		for profile_name in pairs(profiles_named_in(live, {}, 1)) do
+			if has_edit_under(core.format_path({ "DamageProfileTemplates", profile_name })) then
+				return true
+			end
+		end
+	end
+
+	return false
+end
+
+local orphaned_notes = nil -- { paths, edit_generation, notes_generation }
+
+-- Notes with no pending edit (it landed in the files, was reverted, or never existed), sorted. Cached
+-- until edits or notes change: the window lists them every frame.
+function editor.notes_without_edits()
+	local cached = orphaned_notes
+
+	if cached and cached.edit_generation == editor.edit_generation and cached.notes_generation == editor.notes_generation then
+		return cached.paths
+	end
+
+	local paths = {}
+
+	for path in pairs(state.notes) do
+		if not note_has_edits(path) then
+			paths[#paths + 1] = path
+		end
+	end
+
+	table.sort(paths)
+
+	orphaned_notes = {
+		paths = paths,
+		edit_generation = editor.edit_generation,
+		notes_generation = editor.notes_generation,
+	}
+
+	return paths
 end
 
 -- Template fields the game re-reads on every use (actions on each swing, max_fatigue_points
@@ -805,6 +933,13 @@ local function write_change(keys, kind, payload)
 				-- revert puts back that object (keeping shared-preset identity) not a copy
 				original_live = existing and existing.original_live or (type(current) == "table" and current or nil),
 			}
+
+			-- A note written before the field was edited: remember where the edit started too
+			local note = state.notes[path]
+
+			if note and not note.from then
+				note.from = core.format_value(baseline)
+			end
 		end
 	end
 
@@ -1196,6 +1331,32 @@ local function restore_saved_edits()
 	report("Last session's edits: %d now in the files (dropped), %d re-applied, %d failed.", landed, restored, failed)
 end
 
+-- Notes are kept through restarts as written; only their count without edits is reported, as a
+-- reminder to turn them into patch notes and delete them
+local function restore_saved_notes()
+	local saved = mod:get(settings_key("notes"))
+
+	if type(saved) ~= "string" or saved == "" then
+		return
+	end
+
+	for line in saved:gmatch("[^\n]+") do
+		local path, note = core.decode_note(line)
+
+		if path then
+			state.notes[path] = note
+		end
+	end
+
+	editor.notes_generation = editor.notes_generation + 1
+
+	local without_edits = #editor.notes_without_edits()
+
+	if without_edits > 0 then
+		report("%d note(s) have no pending edit (landed in the files, reverted, or never edited) - export the patch notes, then delete them under \"Notes without edits\".", without_edits)
+	end
+end
+
 -- Edits saved while the editor was still part of the balance mod (its own settings) move
 -- into the editor's settings once
 local function migrate_legacy_settings()
@@ -1291,6 +1452,7 @@ local function run_startup()
 
 	restore_saved_forks()
 	restore_saved_edits()
+	restore_saved_notes()
 
 	restoring = false
 
@@ -1372,6 +1534,27 @@ function editor.export()
 	end
 end
 
+-- The patch-note draft (export.patch_notes) to the clipboard
+function editor.export_patch_notes()
+	local text, count = export.patch_notes(editor)
+
+	if count == 0 then
+		report("No notes or edits for patch notes.")
+
+		return
+	end
+
+	print("[Weapon editor] ---- patch notes begin ----")
+	print(text)
+	print("[Weapon editor] ---- patch notes end ----")
+
+	if put_on_clipboard(text) then
+		report("Copied a patch-note draft (%d line(s)) to the clipboard.", count)
+	else
+		report("Clipboard unavailable - the patch notes are in the console log between the begin/end markers.")
+	end
+end
+
 --[[
 	Window and input
 ]]
@@ -1386,6 +1569,34 @@ rawset(_G, "WeaponEditorKeymaps", rawget(_G, "WeaponEditorKeymaps") or {
 	},
 })
 
+--[[
+	InputManager.capture_input only blocks other input through input groups (InputStackSettings):
+	capturing makes the service's group the active one, which disables every service outside the
+	groups ahead of it - the player's controls, the input other mods read. A service in no group
+	(like the game's own debug "imgui" service) is captured without blocking anything, so the
+	game kept reading input. The editor's service gets a group of its own, appended last so the
+	stack's indices don't shift: menus, popups and chat keep priority over it, as they do over
+	chat. Once per session (the globals outlive a hot reload).
+]]
+local INPUT_GROUP_NAME = "weapon_editor"
+
+local function register_input_group()
+	local stack = rawget(_G, "InputStackSettings")
+	local service_to_group = rawget(_G, "InputServiceToGroupMap")
+
+	if type(stack) ~= "table" or type(service_to_group) ~= "table" or service_to_group[INPUT_SERVICE_NAME] then
+		return
+	end
+
+	stack[#stack + 1] = {
+		group_name = INPUT_GROUP_NAME,
+		services = {
+			INPUT_SERVICE_NAME,
+		},
+	}
+	service_to_group[INPUT_SERVICE_NAME] = #stack
+end
+
 local function set_interacting(interacting)
 	if editor.interacting == interacting then
 		return
@@ -1395,6 +1606,8 @@ local function set_interacting(interacting)
 
 	if input_manager then
 		local ok, err = pcall(function ()
+			register_input_group()
+
 			if not input_manager:get_input_service(INPUT_SERVICE_NAME) then
 				input_manager:create_input_service(INPUT_SERVICE_NAME, "WeaponEditorKeymaps")
 				input_manager:map_device_to_service(INPUT_SERVICE_NAME, "keyboard")
@@ -1724,13 +1937,16 @@ end
 	Commands
 ]]
 
-mod:command("we", "Weapon editor: open/close the editor window.", function ()
+-- /we and the mod options keybind (WeaponEditor_data.lua)
+function mod.toggle_window()
 	if editor.window_open then
 		close_window()
 	else
 		open_window()
 	end
-end)
+end
+
+mod:command("we", "Weapon editor: open/close the editor window.", mod.toggle_window)
 
 mod:command("we_breakpoints", "Weapon editor: show/hide the breakpoint window (opens the editor too).", function ()
 	open_window()
@@ -1750,6 +1966,10 @@ end)
 
 mod:command("we_export", "Weapon editor: copy all edits as Lua (with official-value comments) to the clipboard.", function ()
 	editor.export()
+end)
+
+mod:command("we_export_notes", "Weapon editor: copy a patch-note draft (edits and their notes, as markdown) to the clipboard.", function ()
+	editor.export_patch_notes()
 end)
 
 mod:command("we_revert_all", "Weapon editor: revert every edit to what the balance mod's files load.", function ()
@@ -1777,6 +1997,14 @@ mod:command("we_status", "Weapon editor: list current edits and what happened to
 
 		report("  %s = %s (%s %s)", path, core.describe_edit(edit), editor.baseline_label(), core.format_value(edit.baseline))
 	end
+
+	local note_count = 0
+
+	for _ in pairs(state.notes) do
+		note_count = note_count + 1
+	end
+
+	report("%d note(s), %d without a pending edit.", note_count, #editor.notes_without_edits())
 end)
 
 if state.vanilla_missing_dots then

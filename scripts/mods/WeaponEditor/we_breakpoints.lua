@@ -1,28 +1,30 @@
 --[[
-	Weapon editor: breakpoint grid and hit log.
+	Weapon editor: breakpoint grid and hit log. The numbers come from we_predict.lua (damage
+	and stagger prediction).
 
-	Damage comes from the registered balance mod's own formula (its damage_calculation and
-	stagger_multiplier) or, unregistered, the
-	game's DamageUtils.custom_calculate_damage, with everything calculate_damage would read off a
-	target unit taken from the breed instead. Checked against real hits with the hit log: it
-	matches except for instakill perks (Killing Shot, Murderous Prowess), which aren't modelled.
-	Target-side buffs and ranged falloff are left out too.
-
-	Every cell compares three versions of the attack's damage profile, all through that same
+	Every cell compares three versions of the attack's damage profile, all through the same
 	formula, so the difference is purely the weapon data:
 		now       live tables, including editor edits
 		baseline  the balance mod as loaded from its files (labelled with its registered label)
-		vanilla   the profile the action used before the balance mod
+		vanilla   the profile the action used before the balance mod (shown as "official")
 
-	The stagger sheet does the same with the game's own stagger calculation (see "Stagger"
-	below): which stagger tier each hit causes, and how close it gets to the next one.
+	The damage sheet shows hits to kill (or damage); the stagger sheet which stagger tier each
+	hit causes, and how close it gets to the next one.
 ]]
 
 local core = require("scripts/mods/WeaponEditor/we_core")
+local prediction = require("scripts/mods/WeaponEditor/we_predict")
 
 local breakpoints = {
-	editor = nil, -- set by we_main.lua
+	editor = nil, -- set through breakpoints.set_editor
 }
+
+-- we_main.lua hands over the editor: the grid and prediction read the balance mod's formula,
+-- edits and snapshots through it
+function breakpoints.set_editor(editor)
+	breakpoints.editor = editor
+	prediction.editor = editor
+end
 
 -- The grid recomputes when its inputs change (see attacker_signature); this is only a safety
 -- net for anything that signature doesn't capture
@@ -110,445 +112,6 @@ local SHEETS = { "damage", "stagger" }
 local DISPLAY_MODES = { "hits to kill", "damage" }
 local STAGGER_DISPLAY_MODES = { "tier + % of next", "strength" }
 local VARIANTS = { "now", "baseline", "vanilla" }
-
-local function pack(...)
-	return {
-		n = select("#", ...),
-		...,
-	}
-end
-
---[[
-	Damage
-]]
-
-function breakpoints.local_player_unit()
-	local player = Managers.player and Managers.player:local_player()
-	local unit = player and player.player_unit
-
-	return unit and Unit.alive(unit) and unit or nil
-end
-
-function breakpoints.breed_health(breed, difficulty_level)
-	local difficulty_settings = DifficultySettings[difficulty_level]
-
-	return breed.max_health and difficulty_settings and breed.max_health[difficulty_settings.rank] or 0
-end
-
-function breakpoints.hits_to_kill(health, damage)
-	if not damage or damage <= 0 then
-		return nil
-	end
-
-	return math.ceil(health / DamageUtils.networkify_damage(damage))
-end
-
---[[
-	Attacker-side damage buffs. DamageUtils.add_damage_network_player runs calculate_damage and
-	then apply_buffs_to_damage on its result (which a balance mod may replace), which
-	is where talent/property damage buffs live: Heroism (increased_weapon_damage_heavy_attack),
-	Grail Knight's first-target perk (first_melee_hit_damage), melee/ranged/2h power-up
-	properties, damage_dealt... That function has side effects (procs, Gromril, RPCs), so this
-	mirrors only its attacker-side multipliers, in the same order. Target-side effects (target
-	health, poison/bleed, balefire, the target's own buffs) aren't modelled - the hit log flags
-	them when they change a hit.
-]]
-function breakpoints.attacker_buffed_damage(damage, attacker_unit, damage_source, damage_profile, first_hit)
-	local buff_extension = attacker_unit and ScriptUnit.has_extension(attacker_unit, "buff_system")
-
-	if not buff_extension then
-		return damage
-	end
-
-	local item_data = rawget(ItemMasterList, damage_source)
-	local weapon_template = item_data and item_data.template and rawget(Weapons, item_data.template)
-
-	if weapon_template then
-		local buff_type = weapon_template.buff_type
-
-		if buff_type then
-			damage = buff_extension:apply_buffs_to_value(damage, "increased_weapon_damage")
-		end
-
-		local is_melee = MeleeBuffTypes[buff_type]
-		local is_ranged = RangedBuffTypes[buff_type]
-
-		if is_melee then
-			damage = buff_extension:apply_buffs_to_value(damage, "increased_weapon_damage_melee")
-
-			if buff_type == "MELEE_1H" then
-				damage = buff_extension:apply_buffs_to_value(damage, "increased_weapon_damage_melee_1h")
-			elseif buff_type == "MELEE_2H" then
-				damage = buff_extension:apply_buffs_to_value(damage, "increased_weapon_damage_melee_2h")
-			end
-
-			-- apply_buffs_to_damage gets the profile's charge_value as its attack type
-			if damage_profile.charge_value == "heavy_attack" then
-				damage = buff_extension:apply_buffs_to_value(damage, "increased_weapon_damage_heavy_attack")
-			end
-
-			if first_hit then
-				damage = buff_extension:apply_buffs_to_value(damage, "first_melee_hit_damage")
-			end
-		elseif is_ranged then
-			damage = buff_extension:apply_buffs_to_value(damage, "increased_weapon_damage_ranged")
-		end
-
-		local weapon_type = weapon_template.weapon_type
-		local weapon_stat_buffs = weapon_type and WeaponSpecificStatBuffs[weapon_type]
-
-		if weapon_stat_buffs then
-			damage = buff_extension:apply_buffs_to_value(damage, weapon_stat_buffs.damage)
-		end
-
-		if is_melee or is_ranged then
-			damage = buff_extension:apply_buffs_to_value(damage, "reduced_non_burn_damage")
-		end
-	end
-
-	return buff_extension:apply_buffs_to_value(damage, "damage_dealt")
-end
-
---[[
-	Simulated buffs: the grid's custom power / stagger power options and the Opportunist toggle
-	act like extra stat buffs on the attacker, for the duration of one calculation. They go in
-	as an instance field shadowing BuffExtension.apply_buffs_to_value (removed right after), so
-	whatever formula runs - the balance mod's or the game's - sees them wherever it reads that
-	stat. The stats used here are all "stacking_multiplier": the game sums their multipliers
-	into one (value * (1 + sum)), so an extra multiplier m adds value * m to the result.
-]]
-
--- Calls func(...) with extra[stat] added as one more multiplier to each stat in extra (nil or
--- empty: a plain call)
-local function with_extra_stat_buffs(buff_extension, extra, func, ...)
-	if not buff_extension or not extra or next(extra) == nil or rawget(buff_extension, "apply_buffs_to_value") ~= nil then
-		return func(...)
-	end
-
-	local apply_buffs_to_value = buff_extension.apply_buffs_to_value
-
-	buff_extension.apply_buffs_to_value = function (self, value, stat_buff)
-		local result, procced, id = apply_buffs_to_value(self, value, stat_buff)
-		local multiplier = extra[stat_buff]
-
-		if multiplier then
-			result = result + value * multiplier
-		end
-
-		return result, procced, id
-	end
-
-	local results = pack(pcall(func, ...))
-
-	buff_extension.apply_buffs_to_value = nil
-
-	if not results[1] then
-		error(results[2], 0)
-	end
-
-	return unpack(results, 2, results.n)
-end
-
--- A buff template's multiplier as loaded (balance mod changes included): from BuffTemplates,
--- weapon trait or talent buff templates, or fallback
-local function buff_template_multiplier(name, fallback)
-	local template = BuffTemplates and rawget(BuffTemplates, name) or WeaponTraits and WeaponTraits.buff_templates and WeaponTraits.buff_templates[name]
-
-	if not template and TalentBuffTemplates then
-		for _, hero_templates in pairs(TalentBuffTemplates) do
-			template = type(hero_templates) == "table" and hero_templates[name]
-
-			if template then
-				break
-			end
-		end
-	end
-
-	local buff = template and template.buffs and template.buffs[1]
-
-	return buff and tonumber(buff.multiplier) or fallback
-end
-
---[[
-	Damage taken by an enemy tagged by Witch Hunt (defence_debuff_enemies), including Templar's
-	Knowledge's extra debuff when the attacker has the talent. Differently named damage_taken
-	buffs multiply ("stacking_multiplier_multiplicative"). A balance mod's own bonuses for
-	tagged enemies inside its damage formula (TB: Templar's Knowledge's +25% direct damage)
-	need a target unit, so they aren't included.
-]]
-function breakpoints.witch_hunt_multiplier(attacker_unit)
-	local multiplier = 1 + buff_template_multiplier("defence_debuff_enemies", 0.2)
-	local talent_extension = attacker_unit and ScriptUnit.has_extension(attacker_unit, "talent_system")
-
-	if talent_extension and talent_extension:has_talent("victor_witchhunter_improved_damage_taken_ping") then
-		multiplier = multiplier * (1 + buff_template_multiplier("victor_witchhunter_improved_damage_taken_ping", 0.05))
-	end
-
-	return multiplier
-end
-
-local function power_bonus_stats(power_bonus)
-	return power_bonus and power_bonus ~= 0 and {
-		power_level = power_bonus,
-	} or nil
-end
-
--- Returns the damage a hit deals (stagger multiplier and attacker damage buffs applied),
--- base damage (the formula alone) and the damage before attacker buffs. first_hit: the
--- first enemy a swing hits, which is what first_melee_hit_damage buffs check. power_bonus:
--- extra power (0.1 = +10%, like a power buff); damage_multiplier: on top of everything,
--- like a debuff on the enemy (Witch Hunt, the custom damage option).
-function breakpoints.predict(attacker_unit, damage_source, power_level, damage_profile, target_index, is_critical_strike, breed, hit_zone_name, difficulty_level, boost_damage_multiplier, backstab_multiplier, stagger_number, first_hit, power_bonus, damage_multiplier)
-	local editor = breakpoints.editor
-	local do_damage_calculation = editor and editor.host.damage_calculation
-	local target_settings = damage_profile.targets and damage_profile.targets[target_index] or damage_profile.default_target
-
-	if not target_settings then
-		return nil
-	end
-
-	local boost_curve = BoostCurves[target_settings.boost_curve_type]
-	local armor, _, primary_armor = ActionUtils.get_target_armor(hit_zone_name, breed, nil)
-	local buff_extension = attacker_unit and ScriptUnit.has_extension(attacker_unit, "buff_system")
-	local has_power_boost = buff_extension and buff_extension:has_buff_perk("potion_armor_penetration") or false
-	local difficulty_settings = DifficultySettings[difficulty_level]
-	local max_health = breakpoints.breed_health(breed, difficulty_level)
-	local extra_stats = power_bonus_stats(power_bonus)
-	local base_damage
-
-	if do_damage_calculation then
-		base_damage = with_extra_stat_buffs(buff_extension, extra_stats, do_damage_calculation, attacker_unit, damage_source, power_level, DamageOutput, hit_zone_name, damage_profile, target_index, boost_curve, boost_damage_multiplier, is_critical_strike, backstab_multiplier, breed, 0, false, false, has_power_boost, difficulty_level, armor, primary_armor, false, false, max_health, nil)
-	else
-		-- The game's formula: its second return value is the damage before stagger
-		local _, unstaggered = with_extra_stat_buffs(buff_extension, extra_stats, DamageUtils.custom_calculate_damage, attacker_unit, damage_source, power_level, damage_profile, target_index, 0, is_critical_strike, backstab_multiplier, has_power_boost, boost_damage_multiplier, breed, hit_zone_name, 0, difficulty_level)
-
-		base_damage = unstaggered
-	end
-
-	if not base_damage then
-		return nil
-	end
-
-	local final_damage = base_damage
-
-	if not damage_profile.is_dot and editor then
-		final_damage = base_damage * editor.stagger_multiplier(damage_profile, stagger_number or 0, attacker_unit, difficulty_settings)
-	end
-
-	local buffed_damage = breakpoints.attacker_buffed_damage(final_damage, attacker_unit, damage_source, damage_profile, first_hit) * (damage_multiplier or 1)
-
-	return buffed_damage, base_damage, final_damage
-end
-
---[[
-	Stagger. Real hits go through the game's do_stagger_calculation (damage_utils.lua), which
-	reads two things off the enemy's blackboard: its stagger stacks (each adds to the hit's
-	stagger strength, up to double) and its current action (counter_push_power - the Opportunist
-	trait - only applies while that action deals damage, i.e. the enemy is attacking). The
-	function is local to damage_utils.lua, so it's taken from the upvalues of
-	DamageUtils.calculate_stagger_player_tooltip (the game's unit-free wrapper around it) and
-	called with a stand-in blackboard. If that lookup fails, the sheet falls back to the wrapper,
-	which always assumes a fresh enemy that isn't attacking.
-
-	Balance mods don't register anything for this: they change stagger through weapon data and
-	buffs, both read live by the game's function.
-]]
-
-local STAGGER_TYPES = require("scripts/utils/stagger_types")
-local OPPORTUNIST_BUFF = "traits_melee_counter_push_power"
--- Stand-in for the action of an attacking enemy: damage is the field the game checks. It has
--- no stagger_reduction (so the breed's applies) and no ignore_staggers of its own.
-local ATTACKING_ACTION = {
-	damage = 1,
-}
-
--- Stagger type -> label and rank (for green/red). Ranged variants count as their melee tier.
-local STAGGER_TIERS = {
-	[STAGGER_TYPES.none] = { label = "-", rank = 0 },
-	[STAGGER_TYPES.weak] = { label = "W", rank = 1 },
-	[STAGGER_TYPES.ranged_weak] = { label = "W", rank = 1 },
-	[STAGGER_TYPES.weakspot] = { label = "WS", rank = 1 },
-	[STAGGER_TYPES.medium] = { label = "M", rank = 2 },
-	[STAGGER_TYPES.ranged_medium] = { label = "M", rank = 2 },
-	[STAGGER_TYPES.heavy] = { label = "H", rank = 3 },
-	[STAGGER_TYPES.pulling] = { label = "P", rank = 3 },
-	[STAGGER_TYPES.explosion] = { label = "X", rank = 4 },
-}
-
--- A function-valued upvalue of func by name. Without debug names (stripped bytecode), the
--- only function upvalue when there is exactly one.
-local function find_local_function(func, name)
-	local debug_library = rawget(_G, "debug")
-	local get_upvalue = type(debug_library) == "table" and debug_library.getupvalue
-
-	if not get_upvalue or type(func) ~= "function" then
-		return nil
-	end
-
-	local only_function, function_count, has_names = nil, 0, false
-
-	for i = 1, 255 do
-		local upvalue_name, value = get_upvalue(func, i)
-
-		if upvalue_name == nil then
-			break
-		end
-
-		if upvalue_name ~= "" and upvalue_name ~= "?" then
-			has_names = true
-		end
-
-		if type(value) == "function" then
-			if upvalue_name == name then
-				return value
-			end
-
-			only_function = value
-			function_count = function_count + 1
-		end
-	end
-
-	return not has_names and function_count == 1 and only_function or nil
-end
-
-local stagger_calculation = nil
-local stagger_lookup_done = false
-
--- The game's do_stagger_calculation, or nil when it couldn't be found (looked up once)
-function breakpoints.stagger_calculation()
-	if not stagger_lookup_done then
-		stagger_lookup_done = true
-		stagger_calculation = find_local_function(DamageUtils.calculate_stagger_player_tooltip, "do_stagger_calculation") or find_local_function(DamageUtils.calculate_stagger_player, "do_stagger_calculation")
-	end
-
-	return stagger_calculation
-end
-
--- The simulated buffs of a stagger calculation (see with_extra_stat_buffs): power, stagger power
--- (power_level_impact) and, against an attacking enemy, Opportunist - unless something already
--- gives the attacker counter_push_power (the trait itself), which the game then applies itself
-local function stagger_stats(buff_extension, attacking, opportunist, power_bonus, stagger_power_bonus)
-	local extra = power_bonus_stats(power_bonus) or {}
-
-	if stagger_power_bonus and stagger_power_bonus ~= 0 then
-		extra.power_level_impact = stagger_power_bonus
-	end
-
-	if attacking and opportunist then
-		local stat_buffs = buff_extension and buff_extension._stat_buffs
-		local counter_push = stat_buffs and stat_buffs.counter_push_power
-
-		if not (counter_push and next(counter_push) ~= nil) then
-			extra.counter_push_power = buff_template_multiplier(OPPORTUNIST_BUFF, 0.5)
-		end
-	end
-
-	return extra
-end
-
-local function is_ranged_source(damage_source)
-	local item_data = rawget(ItemMasterList, damage_source)
-	local weapon_template = item_data and item_data.template and rawget(Weapons, item_data.template)
-
-	return weapon_template and weapon_template.buff_type and RangedBuffTypes[weapon_template.buff_type] and true or false
-end
-
--- Stagger strength a breed's tiers start at, as do_stagger_calculation computes them for a
--- target without buffs. first_push: a push on an enemy that isn't staggered, which doubles the
--- heavy threshold.
-function breakpoints.stagger_thresholds(breed, difficulty_level, is_ranged, first_push)
-	local difficulty_settings = DifficultySettings[difficulty_level]
-	local rank = difficulty_settings and difficulty_settings.rank or 2
-	local resistance = breed.diff_stagger_resist and (breed.diff_stagger_resist[rank] or breed.diff_stagger_resist[2]) or is_ranged and breed.stagger_resistance_ranged or breed.stagger_resistance or 2
-	local heavy = (breed.stagger_threshold_heavy or 2.5) * resistance
-
-	return {
-		light = (breed.stagger_threshold_light or 0.25) * resistance,
-		medium = (breed.stagger_threshold_medium or 1) * resistance,
-		heavy = first_push and heavy * 2 or heavy,
-	}
-end
-
---[[
-	The stagger a hit causes: { type, label, rank, strength, stagger_value, progress }, where
-	progress is the share of the next tier's threshold the strength reaches (nil at heavy and
-	above, and wherever a breed rule, boss rule or block changed the tier the strength gives).
-	stagger_stacks: the enemy's stacks before the hit. attacking: the enemy is mid-attack.
-	opportunist: add the trait's bonus if the attacker doesn't have it. power_bonus /
-	stagger_power_bonus: extra power / stagger power (0.1 = +10%, like a buff). Returns the
-	result and whether the stand-in blackboard was used (false: fell back to the tooltip
-	wrapper, stacks and attacking ignored).
-]]
-function breakpoints.predict_stagger(attacker_unit, damage_source, power_level, damage_profile, target_index, is_critical_strike, breed, hit_zone_name, difficulty_level, stagger_stacks, attacking, opportunist, blocked, power_bonus, stagger_power_bonus)
-	local target_settings = damage_profile.targets and damage_profile.targets[target_index] or damage_profile.default_target
-
-	if not target_settings then
-		return nil
-	end
-
-	local calculate = breakpoints.stagger_calculation()
-	local has_stacks = calculate and stagger_stacks and stagger_stacks > 0 or false
-	local stagger_type, stagger_value, strength
-
-	if damage_profile.no_stagger then
-		-- server_apply_hit never staggers with these
-		stagger_type, stagger_value, strength = STAGGER_TYPES.none, 0, 0
-	else
-		local buff_extension = attacker_unit and ScriptUnit.has_extension(attacker_unit, "buff_system")
-		local has_power_boost = buff_extension and buff_extension:has_buff_perk("potion_armor_penetration") or false
-		-- The fallback has no attacking enemy, so Opportunist never applies there
-		local extra_stats = stagger_stats(buff_extension, calculate and attacking, opportunist, power_bonus, stagger_power_bonus)
-
-		if calculate then
-			-- Fields a fresh enemy has. stagger_count: staggers in its current chain, which some
-			-- breed stagger rules compare without a nil check (Nurgloth's)
-			local blackboard = {
-				stagger = has_stacks and stagger_stacks or nil,
-				stagger_count = 0,
-				action = attacking and ATTACKING_ACTION or nil,
-			}
-			local results = pack(with_extra_stat_buffs(buff_extension, extra_stats, calculate, ImpactTypeOutput, breed, blackboard, attacker_unit, nil, hit_zone_name, power_level, nil, is_critical_strike, damage_profile, target_index, blocked or false, damage_source, 0, nil, difficulty_level, false, has_power_boost, nil))
-
-			stagger_type, stagger_value, strength = results[1], results[4], results[5]
-		else
-			local _
-
-			stagger_type, _, _, stagger_value, strength = with_extra_stat_buffs(buff_extension, extra_stats, DamageUtils.calculate_stagger_player_tooltip, breed, attacker_unit, hit_zone_name, power_level, is_critical_strike, damage_profile, target_index, blocked or false, damage_source, difficulty_level, has_power_boost, 0)
-		end
-	end
-
-	stagger_type = stagger_type or STAGGER_TYPES.none
-	strength = strength or 0
-
-	local tier = STAGGER_TIERS[stagger_type] or { label = tostring(stagger_type), rank = 0 }
-	local progress = nil
-
-	if strength > 0 then
-		local thresholds = breakpoints.stagger_thresholds(breed, difficulty_level, is_ranged_source(damage_source), damage_profile.is_push and not has_stacks)
-		local implied_rank, next_threshold
-
-		if strength < thresholds.light then
-			implied_rank, next_threshold = 0, thresholds.light
-		elseif strength < thresholds.medium then
-			implied_rank, next_threshold = 1, thresholds.medium
-		elseif strength < thresholds.heavy then
-			implied_rank, next_threshold = 2, thresholds.heavy
-		end
-
-		if next_threshold and implied_rank == tier.rank and stagger_type ~= STAGGER_TYPES.weakspot then
-			progress = strength / next_threshold
-		end
-	end
-
-	return {
-		type = stagger_type,
-		label = tier.label,
-		rank = tier.rank,
-		strength = strength,
-		stagger_value = stagger_value,
-		progress = progress,
-	}, calculate ~= nil
-end
 
 --[[
 	Grid data
@@ -686,7 +249,7 @@ end
 -- Everything about the attacker and the chosen options that every cell shares, or nil without
 -- a player unit
 local function grid_context(options)
-	local unit = breakpoints.local_player_unit()
+	local unit = prediction.local_player_unit()
 
 	if not unit then
 		return nil
@@ -702,6 +265,7 @@ local function grid_context(options)
 
 	local inventory_extension = ScriptUnit.extension(unit, "inventory_system")
 	local slot_data = inventory_extension:get_slot_data(inventory_extension:get_wielded_slot_name())
+	local witch_hunt_multiplier = options.witch_hunt and prediction.witch_hunt_multiplier(unit) or 1
 
 	return {
 		unit = unit,
@@ -712,11 +276,12 @@ local function grid_context(options)
 		stagger_number = options.stagger_index - 1,
 		critical = options.critical,
 		opportunist = options.opportunist,
-		-- Simulated buffs (see with_extra_stat_buffs). The damage multiplier (damage sheet) acts
+		-- Simulated buffs (see with_extra_stat_buffs in we_predict.lua). The damage multiplier (damage sheet) acts
 		-- like debuffs on the enemy; stagger power is the stagger sheet's.
 		power_bonus = (options.power_percent or 0) / 100,
 		stagger_power_bonus = (options.stagger_power_percent or 0) / 100,
-		damage_multiplier = (1 + (options.damage_percent or 0) / 100) * (options.witch_hunt and breakpoints.witch_hunt_multiplier(unit) or 1),
+		witch_hunt_multiplier = witch_hunt_multiplier,
+		damage_multiplier = (1 + (options.damage_percent or 0) / 100) * witch_hunt_multiplier,
 		target_count = options.target_count_index,
 		categories = options.categories,
 		-- Shared with the combo steps' contexts: the first error a cell hit, shown above the grid
@@ -753,54 +318,50 @@ end
 
 -- Damage one hand of an attack deals to a breed's target_index, per column (nil where the
 -- column has no profile or the prediction failed)
-local function hand_damages(ctx, hand, breed, target_index)
-	local damages = {}
+-- One hand's result per column: predict(profile) for each version of the data that has a
+-- profile, reused where column_reuse found it identical. A failed prediction leaves the column
+-- empty and its first error goes to ctx.problems, shown above the grid.
+local function per_variant(ctx, hand, breed, predict)
+	local results = {}
 
 	for _, variant in ipairs(VARIANTS) do
 		local profile = hand.profiles[variant]
 
 		if hand.same_as[variant] then
-			damages[variant] = damages[hand.same_as[variant]]
+			results[variant] = results[hand.same_as[variant]]
 		elseif profile then
-			-- Target 1 is the swing's first hit (first_melee_hit_damage buffs)
-			local ok, damage = pcall(breakpoints.predict, ctx.unit, ctx.damage_source, ctx.power_level, profile, target_index, ctx.critical, breed, ctx.hit_zone_name, ctx.difficulty_level, 0, 1, ctx.stagger_number, target_index == 1, ctx.power_bonus, ctx.damage_multiplier)
+			local ok, result, full_calculation = pcall(predict, profile)
 
-			if ok and damage then
-				damages[variant] = damage
-			end
-		end
-	end
+			if ok then
+				results[variant] = result
 
-	return damages
-end
-
--- The stagger one hand of an attack causes on a breed's target_index, per column (nil where
--- the column has no profile or the prediction failed)
-local function hand_staggers(ctx, hand, breed, target_index)
-	local staggers = {}
-
-	for _, variant in ipairs(VARIANTS) do
-		local profile = hand.profiles[variant]
-
-		if hand.same_as[variant] then
-			staggers[variant] = staggers[hand.same_as[variant]]
-		elseif profile then
-			-- Opportunist means the enemy is attacking - the only time the trait applies
-			local ok, stagger, full_calculation = pcall(breakpoints.predict_stagger, ctx.unit, ctx.damage_source, ctx.power_level, profile, target_index, ctx.critical, breed, ctx.hit_zone_name, ctx.difficulty_level, ctx.stagger_number, ctx.opportunist, ctx.opportunist, false, ctx.power_bonus, ctx.stagger_power_bonus)
-
-			if ok and stagger then
-				staggers[variant] = stagger
-
-				if not full_calculation then
+				-- Stagger: fell back to the tooltip wrapper
+				if result and full_calculation == false then
 					ctx.problems.no_full_calculation = true
 				end
-			elseif not ok then
-				ctx.problems.error = ctx.problems.error or string.format("%s: %s", tostring(breed.name), tostring(stagger))
+			else
+				ctx.problems.error = ctx.problems.error or string.format("%s: %s", tostring(breed.name), tostring(result))
 			end
 		end
 	end
 
-	return staggers
+	return results
+end
+
+-- Damage one hand of an attack deals to a breed's target_index, per column
+local function hand_damages(ctx, hand, breed, target_index)
+	return per_variant(ctx, hand, breed, function (profile)
+		-- Target 1 is the swing's first hit (first_melee_hit_damage buffs)
+		return (prediction.predict(ctx.unit, ctx.damage_source, ctx.power_level, profile, target_index, ctx.critical, breed, ctx.hit_zone_name, ctx.difficulty_level, 0, 1, ctx.stagger_number, target_index == 1, ctx.power_bonus, ctx.damage_multiplier))
+	end)
+end
+
+-- The stagger one hand of an attack causes on a breed's target_index, per column
+local function hand_staggers(ctx, hand, breed, target_index)
+	return per_variant(ctx, hand, breed, function (profile)
+		-- Opportunist means the enemy is attacking - the only time the trait applies
+		return prediction.predict_stagger(ctx.unit, ctx.damage_source, ctx.power_level, profile, target_index, ctx.critical, breed, ctx.hit_zone_name, ctx.difficulty_level, ctx.stagger_number, ctx.opportunist, ctx.opportunist, false, ctx.power_bonus, ctx.stagger_power_bonus)
+	end)
 end
 
 -- The grid's rows: shown breeds grouped under category headers, each with column_count cells
@@ -821,7 +382,7 @@ local function build_rows(ctx, column_count, cell_for)
 				}
 			end
 
-			local health = breakpoints.breed_health(breed, ctx.difficulty_level)
+			local health = prediction.breed_health(breed, ctx.difficulty_level)
 			local cells = {}
 
 			for column = 1, column_count do
@@ -840,27 +401,50 @@ local function build_rows(ctx, column_count, cell_for)
 	return rows
 end
 
-local function compute_attack_grid(editor, ctx)
-	local grid = {
+local function new_grid(ctx)
+	return {
 		power_level = ctx.power_level,
 		difficulty_level = ctx.difficulty_level,
+		problems = ctx.problems,
 		hands = {},
 	}
+end
+
+-- Damage sheet cell variant: { damage, hits }
+local function damage_cell(ctx, hand, breed, health, target_index)
+	local cell = {}
+
+	for variant, damage in pairs(hand_damages(ctx, hand, breed, target_index)) do
+		cell[variant] = {
+			damage = damage,
+			hits = prediction.hits_to_kill(health, damage),
+		}
+	end
+
+	return cell
+end
+
+-- Stagger sheet cell variant: a list of the stagger of each hand that hits there (one here;
+-- a combo step can have two)
+local function stagger_cell(ctx, hand, breed, health, target_index)
+	local cell = {}
+
+	for variant, stagger in pairs(hand_staggers(ctx, hand, breed, target_index)) do
+		cell[variant] = { stagger }
+	end
+
+	return cell
+end
+
+-- One grid per hand of the attack, cells from cell_for (damage_cell / stagger_cell)
+local function compute_attack_grid(editor, ctx, cell_for)
+	local grid = new_grid(ctx)
 
 	for _, hand in ipairs(resolve_profiles(editor, editor.breakpoint_target)) do
 		hand.same_as = column_reuse(editor, hand)
 
 		local rows = build_rows(ctx, ctx.target_count, function (breed, health, target_index)
-			local cell = {}
-
-			for variant, damage in pairs(hand_damages(ctx, hand, breed, target_index)) do
-				cell[variant] = {
-					damage = damage,
-					hits = breakpoints.hits_to_kill(health, damage),
-				}
-			end
-
-			return cell
+			return cell_for(ctx, hand, breed, health, target_index)
 		end)
 
 		grid.hands[#grid.hands + 1] = {
@@ -875,93 +459,33 @@ end
 -- Stagger grids: each cell variant is a list with the stagger of each hand that hits there
 -- (false for a hand without a result), and each row carries its breed's tier thresholds
 local function add_stagger_thresholds(grid, ctx)
-	local is_ranged = is_ranged_source(ctx.damage_source)
+	local is_ranged = prediction.is_ranged_source(ctx.damage_source)
 
 	for _, hand_grid in ipairs(grid.hands) do
 		for _, row in ipairs(hand_grid.rows) do
 			if row.breed then
-				row.thresholds = breakpoints.stagger_thresholds(row.breed, ctx.difficulty_level, is_ranged, false)
+				row.thresholds = prediction.stagger_thresholds(row.breed, ctx.difficulty_level, is_ranged, false)
 			end
 		end
 	end
 
 	grid.stagger = true
-	grid.problems = ctx.problems
 
 	return grid
 end
 
-local function compute_attack_stagger_grid(editor, ctx)
-	local grid = {
-		power_level = ctx.power_level,
-		difficulty_level = ctx.difficulty_level,
-		hands = {},
+-- A combo's grid: one table of rows for the whole combo
+local function new_combo_grid(ctx, steps, rows)
+	local grid = new_grid(ctx)
+
+	grid.combo_steps = steps
+	grid.hands[1] = {
+		rows = rows,
 	}
 
-	for _, hand in ipairs(resolve_profiles(editor, editor.breakpoint_target)) do
-		hand.same_as = column_reuse(editor, hand)
-
-		local rows = build_rows(ctx, ctx.target_count, function (breed, health, target_index)
-			local cell = {}
-
-			for variant, stagger in pairs(hand_staggers(ctx, hand, breed, target_index)) do
-				cell[variant] = { stagger }
-			end
-
-			return cell
-		end)
-
-		grid.hands[#grid.hands + 1] = {
-			hand = hand,
-			rows = rows,
-		}
-	end
-
-	return add_stagger_thresholds(grid, ctx)
+	return grid
 end
 
---[[
-	Combos: a list of attacks repeated in order until the enemy dies. step_hits[i] holds the
-	damage of each hand of attack i - every hand's hit is its own damage event, so each is
-	rounded on its own, like hits_to_kill does. Returns the number of attacks needed.
-]]
-function breakpoints.combo_hits_to_kill(health, step_hits)
-	local step_totals = {}
-	local pass_damage = 0
-
-	for i, hits in ipairs(step_hits) do
-		local step_total = 0
-
-		for _, damage in ipairs(hits) do
-			step_total = step_total + DamageUtils.networkify_damage(damage)
-		end
-
-		step_totals[i] = step_total
-		pass_damage = pass_damage + step_total
-	end
-
-	if pass_damage <= 0 then
-		return nil
-	end
-
-	-- Skip the whole passes that can't kill yet; the kill then lands within the next two
-	local skipped_passes = math.max(0, math.floor(health / pass_damage) - 1)
-	local total = skipped_passes * pass_damage
-	local attacks = skipped_passes * #step_totals
-
-	for _ = 1, 2 do
-		for _, step_total in ipairs(step_totals) do
-			attacks = attacks + 1
-			total = total + step_total
-
-			if total >= health then
-				return attacks
-			end
-		end
-	end
-
-	return nil
-end
 
 -- A combo step's attack: action.sub_action, with the weapon in front when it's not the first
 -- step's weapon
@@ -1026,17 +550,11 @@ local function compute_combo_stagger_grid(editor, ctx)
 		return cell
 	end)
 
-	return add_stagger_thresholds({
-		power_level = ctx.power_level,
-		difficulty_level = ctx.difficulty_level,
-		combo_steps = steps,
-		column_titles = column_titles,
-		hands = {
-			{
-				rows = rows,
-			},
-		},
-	}, ctx)
+	local grid = new_combo_grid(ctx, steps, rows)
+
+	grid.column_titles = column_titles
+
+	return add_stagger_thresholds(grid, ctx)
 end
 
 local function compute_combo_grid(editor, ctx)
@@ -1093,7 +611,7 @@ local function compute_combo_grid(editor, ctx)
 			if complete then
 				cell[variant] = {
 					damage = pass_damage,
-					hits = breakpoints.combo_hits_to_kill(health, step_hits[variant]),
+					hits = prediction.combo_hits_to_kill(health, step_hits[variant]),
 				}
 			end
 		end
@@ -1101,16 +619,7 @@ local function compute_combo_grid(editor, ctx)
 		return cell
 	end)
 
-	return {
-		power_level = ctx.power_level,
-		difficulty_level = ctx.difficulty_level,
-		combo_steps = steps,
-		hands = {
-			{
-				rows = rows,
-			},
-		},
-	}
+	return new_combo_grid(ctx, steps, rows)
 end
 
 local function showing_combo(editor)
@@ -1119,7 +628,7 @@ end
 
 -- "simulated: +10% power, damage x1.26 (witch hunt x1.26)" for the grid's header, or nil when
 -- the sheet simulates nothing
-local function simulated_buffs_text(ctx, options, stagger)
+local function simulated_buffs_text(ctx, stagger)
 	local parts = {}
 
 	if ctx.power_bonus ~= 0 then
@@ -1133,8 +642,8 @@ local function simulated_buffs_text(ctx, options, stagger)
 	elseif ctx.damage_multiplier ~= 1 then
 		local text = string.format("damage x%.3f", ctx.damage_multiplier)
 
-		if options.witch_hunt then
-			text = string.format("%s (witch hunt x%.3f)", text, breakpoints.witch_hunt_multiplier(ctx.unit))
+		if ctx.witch_hunt_multiplier ~= 1 then
+			text = string.format("%s (witch hunt x%.3f)", text, ctx.witch_hunt_multiplier)
 		end
 
 		parts[#parts + 1] = text
@@ -1156,11 +665,11 @@ local function compute_grid(editor, options)
 	if showing_combo(editor) then
 		grid = stagger and compute_combo_stagger_grid(editor, ctx) or compute_combo_grid(editor, ctx)
 	elseif editor.breakpoint_target then
-		grid = stagger and compute_attack_stagger_grid(editor, ctx) or compute_attack_grid(editor, ctx)
+		grid = stagger and add_stagger_thresholds(compute_attack_grid(editor, ctx, stagger_cell), ctx) or compute_attack_grid(editor, ctx, damage_cell)
 	end
 
 	if grid then
-		grid.simulated = simulated_buffs_text(ctx, options, stagger)
+		grid.simulated = simulated_buffs_text(ctx, stagger)
 	end
 
 	return grid
@@ -1171,12 +680,12 @@ end
 	called in this order for every hit:
 		add_calculate_damage_observer     base + stagger damage, checked against the formula
 		add_apply_buffs_to_damage_wrapper damage after damage buffs, checked against
-		                                  breakpoints.attacker_buffed_damage
+		                                  prediction.attacker_buffed_damage
 	Unregistered, we_main.lua hooks the game's functions directly instead; only the final
 	damage is visible then, so the formula check is skipped.
 
 	Staggers come from we_main.lua's hook on DamageUtils.calculate_stagger_player (always the
-	game's own), each checked against breakpoints.predict_stagger with the enemy's real stagger
+	game's own), each checked against prediction.predict_stagger with the enemy's real stagger
 	stacks and whether it was attacking.
 ]]
 
@@ -1205,7 +714,7 @@ local function profile_name(damage_profile)
 end
 
 function breakpoints.on_calculate_damage(final_damage, base_damage, damage_output, target_unit, attacker_unit, hit_zone_name, original_power_level, boost_curve, boost_damage_multiplier, is_critical_strike, damage_profile, target_index, backstab_multiplier, damage_source)
-	if not hit_log.enabled or not target_unit or not damage_profile or attacker_unit ~= breakpoints.local_player_unit() then
+	if not hit_log.enabled or not target_unit or not damage_profile or attacker_unit ~= prediction.local_player_unit() then
 		return
 	end
 
@@ -1226,7 +735,7 @@ function breakpoints.on_calculate_damage(final_damage, base_damage, damage_outpu
 	hit_log.last_key, hit_log.last_t = hit_key, t
 
 	local difficulty_level = Managers.state.difficulty:get_difficulty()
-	local _, predicted_base = breakpoints.predict(attacker_unit, damage_source, original_power_level, damage_profile, target_index or 1, is_critical_strike, breed, hit_zone_name, difficulty_level, boost_damage_multiplier, backstab_multiplier, 0)
+	local _, predicted_base = prediction.predict(attacker_unit, damage_source, original_power_level, damage_profile, target_index or 1, is_critical_strike, breed, hit_zone_name, difficulty_level, boost_damage_multiplier, backstab_multiplier, 0)
 	local entries = hit_log.entries
 	-- Unchecked (nil) when the base damage isn't visible: no balance mod registered its observer
 	local formula_match = nil
@@ -1244,7 +753,7 @@ function breakpoints.on_calculate_damage(final_damage, base_damage, damage_outpu
 		damage_profile = damage_profile,
 		damage_source = damage_source,
 		target_unit = target_unit,
-		health = breakpoints.breed_health(breed, difficulty_level),
+		health = prediction.breed_health(breed, difficulty_level),
 		base = base_damage,
 		calculated = final_damage,
 		predicted_base = predicted_base,
@@ -1267,16 +776,16 @@ function breakpoints.on_apply_buffs_to_damage(func, ...)
 	end
 
 	local current_damage, attacked_unit, attacker_unit, damage_source, _, _, _, first_hit = ...
-	local results = pack(func(...))
+	local results = core.pack(func(...))
 	local buffed = results[1]
 
-	if type(buffed) == "number" and attacker_unit == breakpoints.local_player_unit() then
+	if type(buffed) == "number" and attacker_unit == prediction.local_player_unit() then
 		-- The newest entry for this target that hasn't seen its buff step yet
 		for i = 1, math.min(#hit_log.entries, 5) do
 			local entry = hit_log.entries[i]
 
 			if entry.target_unit == attacked_unit and entry.buffed == nil then
-				local ok, predicted = pcall(breakpoints.attacker_buffed_damage, current_damage, attacker_unit, damage_source, entry.damage_profile, first_hit)
+				local ok, predicted = pcall(prediction.attacker_buffed_damage, current_damage, attacker_unit, damage_source, entry.damage_profile, first_hit)
 
 				entry.buffed = buffed
 				entry.first_hit = first_hit
@@ -1303,18 +812,18 @@ function breakpoints.on_calculate_stagger(func, ...)
 	local blackboard = target_unit and BLACKBOARDS[target_unit]
 	local breed = blackboard and blackboard.breed
 
-	if attacker_unit ~= breakpoints.local_player_unit() or not breed or breed.is_hero or not damage_profile then
+	if attacker_unit ~= prediction.local_player_unit() or not breed or breed.is_hero or not damage_profile then
 		return func(...)
 	end
 
 	-- Read before the hit: stagger_ai adds this hit's stacks after the calculation
 	local stacks = blackboard.stagger or 0
 	local attacking = blackboard.action and blackboard.action.damage and true or false
-	local results = pack(func(...))
+	local results = core.pack(func(...))
 	local stagger_type, strength = results[1], results[5] or 0
 	local difficulty_level = Managers.state.difficulty:get_difficulty()
-	local ok, predicted = pcall(breakpoints.predict_stagger, attacker_unit, damage_source, power_level, damage_profile, target_index or 1, is_critical_strike, breed, hit_zone_name, difficulty_level, stacks, attacking, false, blocked)
-	local tier = STAGGER_TIERS[stagger_type]
+	local ok, predicted = pcall(prediction.predict_stagger, attacker_unit, damage_source, power_level, damage_profile, target_index or 1, is_critical_strike, breed, hit_zone_name, difficulty_level, stacks, attacking, false, blocked)
+	local tier = prediction.STAGGER_TIERS[stagger_type]
 	local entries = hit_log.stagger_entries
 
 	table.insert(entries, 1, {
@@ -1499,7 +1008,7 @@ end
 -- list (BuffExtension.id counts up on every add, the list shrinks on removal), power level
 -- and wielded item (the damage source). Changes => recompute; otherwise the grid is reused.
 local function attacker_signature()
-	local unit = breakpoints.local_player_unit()
+	local unit = prediction.local_player_unit()
 
 	if not unit then
 		return "no unit"
@@ -1586,12 +1095,13 @@ local function draw_grid(grid, options)
 		if grid.problems.no_full_calculation then
 			text_colored("The game's stagger calculation couldn't be reached (debug.getupvalue) - showing its tooltip version instead: stagger stacks and Opportunist are ignored.", WORSE_COLOR)
 		end
-
-		if grid.problems.error then
-			text_colored("Stagger calculation failed: " .. grid.problems.error, WORSE_COLOR)
-		end
 	elseif grid.combo_steps then
 		text_colored(string.format("combo of %d attacks, repeated in order - hits: attacks to kill, damage: one pass of the combo. Hit zone, stagger and crit are set per attack in the combo list.", #grid.combo_steps), INFO_COLOR)
+	end
+
+	-- A cell whose calculation threw is left empty; the first error says why
+	if grid.problems.error then
+		text_colored("Calculation failed (cells left empty): " .. grid.problems.error, WORSE_COLOR)
 	end
 
 	local column_titles = grid.column_titles
@@ -1720,7 +1230,7 @@ local function draw_hit_log()
 		local text = string.format("%s %s T%s%s%s [%s] %.2f dmg (%s stagger, x%.2f damage buffs) - %s hits of %.0f hp",
 			entry.breed_name, entry.hit_zone_name, tostring(entry.target_index), entry.is_critical_strike and " crit" or "", entry.first_hit and " first hit" or "", entry.profile_name,
 			dealt, stagger_text, buff_multiplier,
-			tostring(breakpoints.hits_to_kill(entry.health, dealt) or "-"), entry.health)
+			tostring(prediction.hits_to_kill(entry.health, dealt) or "-"), entry.health)
 
 		if entry.formula_match == false then
 			text_colored(string.format("%s - formula MISMATCH (base %.2f, predicted %.2f)", text, entry.base, entry.predicted_base or -1), MISMATCH_COLOR)
@@ -1853,7 +1363,7 @@ local function draw_body(editor, t)
 
 	local grid = has_subject and s.breakpoint_grid or nil
 
-	if Imgui.collapsing_header(string.format("combo (%d attacks)##bp_combo", #editor.breakpoint_combo), #editor.breakpoint_combo > 0) then
+	if Imgui.collapsing_header(string.format("combo (%d attacks)###bp_combo", #editor.breakpoint_combo), #editor.breakpoint_combo > 0) then
 		draw_combo(editor, grid, options)
 	end
 

@@ -14,6 +14,14 @@ core.EXCLUDED_KEYS = {
 	lookup_data = true,
 }
 
+-- A call's results with their count, so trailing nils survive unpack(t, 1, t.n)
+function core.pack(...)
+	return {
+		n = select("#", ...),
+		...,
+	}
+end
+
 function core.deep_copy(value, seen)
 	if type(value) ~= "table" then
 		return value
@@ -362,6 +370,44 @@ function core.decode_edit(text)
 	end
 
 	return nil
+end
+
+--[[
+	Notes (why an edit was made) are persisted the same way, one per line:
+		path \t from \t text
+	from: for a field note, the balance mod's value the edit started from as display text
+	(core.format_value), kept so a patch note can still say "(from X)" after the edit landed in
+	the files; empty for an entry note. Backslashes, tabs and newlines inside are escaped.
+]]
+
+local function escape_note_part(text)
+	return (text:gsub("\\", "\\\\"):gsub("\t", "\\t"):gsub("\n", "\\n"))
+end
+
+local function unescape_note_part(text)
+	return (text:gsub("\\(.)", function (char)
+		return char == "n" and "\n" or char == "t" and "\t" or char
+	end))
+end
+
+function core.encode_note(path, note)
+	return table.concat({ path, escape_note_part(note.from or ""), escape_note_part(note.text) }, "\t")
+end
+
+-- Returns path, note ({ text, from }); nil when unreadable
+function core.decode_note(line)
+	local path, from, text = line:match("^(.-)\t(.-)\t(.*)$")
+
+	if not path or text == "" then
+		return nil
+	end
+
+	from = unescape_note_part(from)
+
+	return path, {
+		text = unescape_note_part(text),
+		from = from ~= "" and from or nil,
+	}
 end
 
 -- Short human description of an edit's new state, for lists and chat

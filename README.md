@@ -93,12 +93,18 @@ named `mb_...` and its profile blocks are `NewDamageProfileTemplates.mb_x`.
 | `/we_breakpoints` | Show/hide the breakpoint window |
 | `/we_reequip` | Respawn the wielded weapon so wield/spawn-time fields apply |
 | `/we_export` | Copy all edits as Lua to the clipboard (also printed to the console log) |
-| `/we_status` | List pending edits, and what happened to last session's at launch |
+| `/we_export_notes` | Copy a patch-note draft (edits and their notes, as markdown) to the clipboard |
+| `/we_status` | List pending edits and notes, and what happened to last session's at launch |
 | `/we_revert_all` | Revert every edit to what the balance mod's files load |
 | `/we_reset_windows` | Move both windows back on screen (they vanish if dragged outside the game window) |
 
-**F3** switches between using the windows (mouse cursor, game input blocked) and playing.
+**F3** switches between using the windows and playing. Using the windows shows the cursor and
+blocks game input the way open chat does (no movement, attacks or other mods' keybinds; the
+Esc menu and popups still work).
 Chat can't be opened while the windows have input, so press F3 before typing a command.
+
+**F2** opens and closes the editor window like `/we` (rebind it under **Mod Options → Weapon Editor → Open/close the editor**;
+it works with menus open too).
 
 ## Finding things
 
@@ -113,7 +119,10 @@ Chat can't be opened while the windows have input, so press F3 before typing a c
   profile, `explosion_template` / `aoe` / `aoe_name` open the explosion, and
   `default_spread_template` / `spread_template_override` open the spread template, and a
   profile's `dot_template_name` opens its DoT template.
-- `*` after a name means something below it is edited.
+- After a name (tree node or heading): a yellow `*` means something below it is edited, a blue
+  `~` that something below differs from official (the balance mod's changes and your edits).
+  Weapon trees roll these up: a sub-action counts the damage profiles it uses, an action its
+  sub-actions, and the template heading everything in it.
 
 ## Editing
 
@@ -127,12 +136,18 @@ Chat can't be opened while the windows have input, so press F3 before typing a c
   Editing those shows a red warning with a **re-equip** button (also in the menu bar and as
   `/we_reequip`). Ammo is kept as a percentage of the new maximum.
 - The windows call the game's own values (the vanilla snapshot) **official**.
-- Every edited field shows its **MB** value (as loaded from the files) and its **official**
-  value, plus a **revert** button. There are also revert buttons per weapon, per profile, per
-  explosion/spread entry, in the **All edits** list, and **Revert all**.
-- A field you haven't edited shows its **official** value (in blue) wherever the balance mod
-  changed it, or "official (not set)" for a field the balance mod added. In the attack sheet
-  that's a `~` next to the cell (`*` for your edits), with the values on hover.
+- Colors are the same in all fields and the attack sheet: **yellow** = the **MB** value (as
+  loaded from the files), **blue** = the **official** value.
+  - Edited field: its MB value in yellow and its official value in blue, plus a **revert**
+    button (all fields). There are also revert buttons per weapon, per profile, per
+    explosion/spread entry, in the **All edits** list, and **Revert all**.
+  - Untouched field: its official value in blue wherever the balance mod changed it ("not
+    set"/`(none)`: a field the balance mod added). Inside a balance mod profile that's the value
+    of the official profile its attacks used; that profile's name shows only where it differs,
+    at the attack's damage profile field.
+  - The attack sheet shows the bare values after each cell. An edited cell's yellow MB value is
+    a button: click it to revert the cell. A long value is cut off by the column; hover over
+    it for the full value.
 - **Shared presets.** Vanilla profiles share `PowerLevelTemplates` presets (armor modifiers,
   crit, cleave). Editing a field inside one first copies the preset into that profile, so other
   weapons are unaffected. Weapon action tables shared between templates are only flagged
@@ -277,9 +292,48 @@ first attack). The grid shows, per breed and target index:
 
 Paste each part into the matching weapon change file, rebuild and restart.
 
+## Notes
+
+Notes record why a balance edit was made, for dev comments and patch notes.
+
+- **Where:** a **note** button sits next to every edited field and every field that already has
+  a note (and next to each edit in the **All edits** list), and next to entry headings - weapon
+  template, attack (sub-action), damage profile, explosion/spread/DoT entry. Tick **note mode**
+  at the top (next to structure mode) to get it on every other editable field too. **note**
+  opens a text box (**save note**, **cancel**, **delete note**); saved notes show in grey under
+  what they belong to, and tree nodes with a note below them get a grey `n` (next to `*` and
+  `~`).
+- **Attack sheet:** edited and noted cells (every cell in note mode) have a compact `n` (`n*`
+  with a note; hover to read it). Its text box opens below the sheet.
+- **Lifetime:** notes are saved per balance mod like edits, and outlive them: reverting an edit
+  keeps its note, and so does the edit landing in the files at launch. A note written before
+  its field was edited picks up the edit's starting value once it's edited. Notes without a
+  pending edit (landed, reverted, or never edited) show under **Notes without edits** (and chat
+  says how many at launch) until you delete them - export the patch notes first. In the
+  patch-note draft, a note on a field that was never edited is a bullet of its own.
+- **In `/we_export`:** each note prints as `-- note:` lines above what it belongs to: an entry
+  note above the entry's first line, an attack's note above its first edit (or next to its
+  "used by" line in a damage profile section), a field note above the field, inside whole
+  profile blocks too.
+- **Patch-note draft** (`/we_export_notes` or **Export patch notes** in the menu): markdown in
+  the style of TourneyBalance's `$BEGIN_TB` patch notes, to tidy up and paste:
+
+      ## Weapons
+      **Halberd (es_halberd_template)**
+
+      *the weapon's note*
+      *action_one.heavy_attack_left: the attack's note*
+      * action_one.heavy_attack_left: Increased damage_profile to tb_x (from heavy_slashing). the field's note
+
+  One heading per weapon (its in-game name, template in brackets), a bullet per change with
+  "Increased/Reduced/Changed ... to X (from Y)", "Added" or "Removed". "from" is the MB value
+  before the edit; for a note whose edit already landed, the value it remembered when written.
+  Damage profile changes are listed under every weapon whose attacks use the profile, labelled
+  with those attacks. Explosions, spread and DoTs get their own headings under `## Other`.
+
 ## Restarting
 
-Edits and forks are saved, so they survive a crash or restart. At launch the editor compares
+Edits, forks and notes are saved, so they survive a crash or restart. At launch the editor compares
 each saved edit against what the files now load: edits already in the files are **dropped**,
 the rest are **re-applied**. The chat message (and `/we_status`) reports how many of each,
 which doubles as a check that a paste landed.
@@ -299,4 +353,6 @@ All in `scripts/mods/WeaponEditor/`:
 | `we_core.lua` | Shared helpers: paths, value formatting, edit encoding |
 | `we_export.lua` | The Lua exporter (key order from the balance mod's registration) |
 | `we_ui.lua` | The editor window, attack sheet, structure mode |
-| `we_breakpoints.lua` | Breakpoint grid and hit log |
+| `we_diff.lua` | What changed: edit lookup, official values and differences, the tree roll-ups the window's `*` / `~` markers come from |
+| `we_breakpoints.lua` | Breakpoint grid (damage and stagger sheets) and hit log |
+| `we_predict.lua` | Damage and stagger prediction for the grid and hit log, simulated buffs |

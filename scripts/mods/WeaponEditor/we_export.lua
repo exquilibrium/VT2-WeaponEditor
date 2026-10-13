@@ -17,6 +17,9 @@
 
 	Structural edits print as a whole table (added field, rewritten array), "= nil"
 	(removed field) or "= ExplosionTemplates.x" (a weapon's copy linked to the global).
+
+	Notes print as "-- note:" lines above what they belong to. export.patch_notes (bottom) turns
+	the same edits and notes into a markdown patch-note draft.
 ]]
 
 local core = require("scripts/mods/WeaponEditor/we_core")
@@ -180,13 +183,41 @@ function export.context_for_keys(keys)
 	return child_context(previous == "targets" and "targets" or "other", last)
 end
 
-local function print_table(ctx, authored, live, vanilla_node, indent, context)
+--[[
+	Notes (editor.set_note) print as "-- note:" comment lines above what they belong to: an entry
+	note above the entry's first line, a field note above the field. Each prints once.
+]]
+local function print_note(ctx, path, indent)
+	local note = ctx.state.notes[path]
+
+	if not note or ctx.printed_notes[path] then
+		return
+	end
+
+	ctx.printed_notes[path] = true
+
+	for line in note.text:gmatch("[^\n]+") do
+		ctx.out[#ctx.out + 1] = (indent or "") .. "-- note: " .. line
+	end
+end
+
+-- The notes of every table on the way down to keys (entry, action, sub-action...) and of keys
+-- itself
+local function print_notes_above(ctx, keys, indent)
+	for last_index = 2, #keys do
+		print_note(ctx, core.format_path(keys, nil, last_index), indent)
+	end
+end
+
+-- keys: the path of `live`, for the notes of the fields inside it (nil: no notes)
+local function print_table(ctx, authored, live, vanilla_node, indent, context, keys)
 	local out = ctx.out
 	local in_sequence = core.is_sequence(live)
 
 	for _, key in ipairs(ordered_keys(ctx, live, context)) do
 		local authored_value = type(authored) == "table" and authored[key] or nil
 		local live_value = live[key]
+		local child_keys = keys and core.append_key(keys, key)
 		local skip = false
 
 		-- _damage_profile_setup.lua adds an empty targets table to profiles that don't author one
@@ -202,6 +233,10 @@ local function print_table(ctx, authored, live, vanilla_node, indent, context)
 
 		if not skip then
 			local prefix = indent .. key_text(key, in_sequence)
+
+			if child_keys then
+				print_note(ctx, core.format_path(child_keys), indent)
+			end
 
 			if type(live_value) == "table" then
 				if type(authored_value) == "string" and live_value == PowerLevelTemplates[authored_value] then
@@ -223,7 +258,7 @@ local function print_table(ctx, authored, live, vanilla_node, indent, context)
 
 					out[#out + 1] = open
 
-					print_table(ctx, type(authored_value) == "table" and authored_value or nil, live_value, vanilla_child, indent .. "\t", child_context(context, key))
+					print_table(ctx, type(authored_value) == "table" and authored_value or nil, live_value, vanilla_child, indent .. "\t", child_context(context, key), child_keys)
 
 					out[#out + 1] = indent .. "},"
 				end
@@ -294,7 +329,7 @@ local function print_edit(ctx, edit)
 		out[#out + 1] = open
 
 		if type(live_table) == "table" then
-			print_table(ctx, nil, live_table, type(vanilla_value) == "table" and vanilla_value or false, "\t", export.context_for_keys(edit.keys))
+			print_table(ctx, nil, live_table, type(vanilla_value) == "table" and vanilla_value or false, "\t", export.context_for_keys(edit.keys), edit.keys)
 		end
 
 		out[#out + 1] = "}"
@@ -317,10 +352,13 @@ local function print_global_section(ctx, root, name, edits)
 	end
 
 	for _, edit in ipairs(sorted_edits(edits)) do
+		print_notes_above(ctx, edit.keys)
 		print_edit(ctx, edit)
 	end
 end
 
+-- The attacks using a profile, each with its weapon's and its own note (a change made through
+-- the profile is often explained on the attack)
 local function print_users(ctx, users)
 	local out = ctx.out
 
@@ -332,6 +370,10 @@ local function print_users(ctx, users)
 		end
 
 		out[#out + 1] = "-- used by " .. core.format_path(user.keys)
+
+		-- user.keys end at the damage_profile field: the weapon and the sub-action above it
+		print_note(ctx, core.format_path(user.keys, nil, 2))
+		print_note(ctx, core.format_path(user.keys, nil, #user.keys - 1))
 	end
 end
 
@@ -350,6 +392,7 @@ local function print_weapon_section(ctx, template_name, edits)
 	out[#out + 1] = "-- " .. template_name
 
 	for _, edit in ipairs(sorted_edits(edits)) do
+		print_notes_above(ctx, edit.keys)
 		print_edit(ctx, edit)
 	end
 end
@@ -412,12 +455,13 @@ local function print_profile_block_section(ctx, profile_name, edits)
 		out[#out + 1] = "-- " .. profile_name .. ": replaces the existing block"
 	end
 
+	print_note(ctx, core.format_path({ "DamageProfileTemplates", profile_name }))
 	print_users(ctx, users)
 	print_session_changes(ctx, sorted_edits(edits))
 
 	out[#out + 1] = header
 
-	print_table(ctx, authored_profiles and authored_profiles[profile_name], DamageProfileTemplates[profile_name], vanilla_root, "\t", "profile")
+	print_table(ctx, authored_profiles and authored_profiles[profile_name], DamageProfileTemplates[profile_name], vanilla_root, "\t", "profile", { "DamageProfileTemplates", profile_name })
 
 	out[#out + 1] = "}"
 end
@@ -430,6 +474,7 @@ local function print_vanilla_profile_section(ctx, profile_name, edits)
 	out[#out + 1] = ""
 	out[#out + 1] = "-- " .. profile_name
 
+	print_note(ctx, core.format_path({ "DamageProfileTemplates", profile_name }))
 	print_users(ctx, ctx.editor.profile_users(profile_name))
 
 	for _, edit in ipairs(sorted_edits(edits)) do
@@ -460,11 +505,12 @@ local function print_vanilla_profile_section(ctx, profile_name, edits)
 
 				out[#out + 1] = open
 
-				print_table(ctx, nil, live_table, type(vanilla_table) == "table" and vanilla_table or false, "\t", export.context_for_keys(copy_record.keys))
+				print_table(ctx, nil, live_table, type(vanilla_table) == "table" and vanilla_table or false, "\t", export.context_for_keys(copy_record.keys), copy_record.keys)
 
 				out[#out + 1] = "}"
 			end
 		else
+			print_notes_above(ctx, edit.keys)
 			print_edit(ctx, edit)
 		end
 	end
@@ -478,6 +524,7 @@ function export.build(editor)
 		state = state,
 		out = {},
 		vanilla_preset_names = {},
+		printed_notes = {}, -- note path -> true once printed (print_note)
 	}
 
 	for name, preset in pairs(state.vanilla.PowerLevelTemplates or {}) do
@@ -564,6 +611,292 @@ function export.build(editor)
 		else
 			print_vanilla_profile_section(ctx, profile_name, profile_edits[profile_name])
 		end
+	end
+
+	return table.concat(out, "\n"), count
+end
+
+--[[
+	Patch-note draft (/we_export_notes): markdown in the style of the balance mod's patch notes
+	(TourneyBalance's $BEGIN_TB ... $END_TB blocks), to tidy up and paste:
+
+		**Halberd (es_halberd_template)**
+
+		*the weapon's note*
+		*action_one.heavy_attack_left: the attack's note*
+		* action_one.heavy_attack_left: Increased damage_profile ... to X (from Y). the field's note
+
+	"from" is the balance mod's value before the edit or, for a note whose edit already landed in
+	the files, the value the note remembered. A damage profile's changes are listed under every
+	weapon whose attacks use it, labelled with those attacks. Other entries get their own heading
+	("**Explosion x**").
+]]
+
+local ENTRY_TITLES = {
+	ExplosionTemplates = "Explosion",
+	SpreadTemplates = "Spread",
+	BuffTemplates = "DoT",
+	DamageProfileTemplates = "Damage profile",
+}
+
+-- Weapon template -> its localized name (from the first item using it)
+local function weapon_display_names()
+	local names = {}
+	local localize = rawget(_G, "Localize")
+
+	if not localize then
+		return names
+	end
+
+	for _, item in pairs(ItemMasterList) do
+		local template = type(item) == "table" and item.template
+
+		if type(template) == "string" and not names[template] and type(item.display_name) == "string" then
+			local ok, localized = pcall(localize, item.display_name)
+
+			-- A missing localization comes back as "<key>"
+			if ok and type(localized) == "string" and localized ~= "" and not localized:find("<", 1, true) then
+				names[template] = localized
+			end
+		end
+	end
+
+	return names
+end
+
+-- A shown value (core.format_value) as prose: strings without their quotes
+local function plain(text)
+	return text and (text:match('^"(.*)"$') or text) or "none"
+end
+
+local function one_line(text)
+	return (text:gsub("%s*\n%s*", " "))
+end
+
+-- "Increased x to 0.6 (from 0.5)", "Changed", "Added", "Removed"
+local function change_sentence(field, kind, from, to)
+	if kind == "removed" then
+		return string.format("Removed %s (was %s)", field, plain(from))
+	elseif from == nil or from == "none" then
+		return string.format("Added %s: %s", field, plain(to))
+	end
+
+	local from_number, to_number = tonumber(from), tonumber(to)
+	local verb = "Changed"
+
+	if from_number and to_number and from_number ~= to_number then
+		verb = to_number > from_number and "Increased" or "Reduced"
+	end
+
+	return string.format("%s %s to %s (from %s)", verb, field, plain(to), plain(from))
+end
+
+function export.patch_notes(editor)
+	local state = editor.state
+	local display_names = weapon_display_names()
+	local groups, group_list = {}, {}
+
+	local function group_for(key, title, is_weapon)
+		local group = groups[key]
+
+		if not group then
+			group = {
+				title = title,
+				is_weapon = is_weapon,
+				sections = {},
+				section_list = {},
+			}
+			groups[key] = group
+			group_list[#group_list + 1] = group
+		end
+
+		return group
+	end
+
+	local function section_for(group, key, label)
+		local section = group.sections[key]
+
+		if not section then
+			section = {
+				label = label,
+				bullets = {},
+			}
+			group.sections[key] = section
+			group.section_list[#group.section_list + 1] = section
+		end
+
+		return section
+	end
+
+	local function weapon_group(template_name)
+		return group_for("Weapons." .. template_name, string.format("%s (%s)", display_names[template_name] or template_name, template_name), true)
+	end
+
+	-- Where something at keys is listed: { section, field (relative label) }, one place per weapon
+	-- for a damage profile used by several. The group of a place is reachable as place.group.
+	local function places(keys)
+		local root, name = keys[1], keys[2]
+
+		if root == "Weapons" then
+			local group = weapon_group(name)
+
+			if keys[3] == "actions" and #keys >= 5 then
+				local label = tostring(keys[4]) .. "." .. tostring(keys[5])
+
+				return {
+					{ group = group, section = section_for(group, label, label), field = core.format_relative(keys, 6) },
+				}
+			end
+
+			return {
+				{ group = group, section = section_for(group, "", ""), field = core.format_relative(keys, 3) },
+			}
+		end
+
+		local field = core.format_relative(keys, 3)
+
+		if root == "DamageProfileTemplates" then
+			-- template -> the attacks of that weapon using the profile
+			local attacks, templates = {}, {}
+
+			for _, user in ipairs(editor.profile_users(name)) do
+				local template = user.keys[2]
+				local label = tostring(user.keys[4]) .. "." .. tostring(user.keys[5])
+
+				if not attacks[template] then
+					attacks[template] = {}
+					templates[#templates + 1] = template
+				end
+
+				if not table.find(attacks[template], label) then
+					table.insert(attacks[template], label)
+				end
+			end
+
+			if #templates > 0 then
+				local result = {}
+
+				table.sort(templates)
+
+				for _, template in ipairs(templates) do
+					local group = weapon_group(template)
+
+					table.sort(attacks[template])
+
+					result[#result + 1] = {
+						group = group,
+						section = section_for(group, "profile:" .. name, table.concat(attacks[template], ", ")),
+						field = field,
+					}
+				end
+
+				return result
+			end
+		end
+
+		local group = group_for(root .. "." .. tostring(name), string.format("%s %s", ENTRY_TITLES[root] or root, tostring(name)), false)
+
+		return {
+			{ group = group, section = section_for(group, "", ""), field = field },
+		}
+	end
+
+	local function add_change(keys, kind, from, to, note)
+		for _, place in ipairs(places(keys)) do
+			local field = place.field ~= "" and place.field or tostring(keys[#keys])
+			local bullet = change_sentence(field, kind, from, to)
+
+			if note then
+				bullet = bullet .. ". " .. one_line(note.text)
+			end
+
+			table.insert(place.section.bullets, bullet)
+		end
+	end
+
+	-- Changes: every edit, and every field note whose edit already landed
+	for path, edit in pairs(state.edits) do
+		local kind = edit.kind or "value"
+		local to = kind == "value" and core.format_value(edit.value) or core.describe_edit(edit)
+
+		add_change(edit.keys, kind, core.format_value(edit.baseline), to, state.notes[path])
+	end
+
+	for path, note in pairs(state.notes) do
+		if not state.edits[path] then
+			local keys = core.parse_path(path)
+
+			if note.from then
+				local live = core.live_value(keys)
+
+				add_change(keys, live == nil and "removed" or "value", note.from, core.format_value(live), note)
+			else
+				-- An entry note: the weapon's / entry's own goes under its heading, an attack's
+				-- (or a damage profile's) at its attacks
+				local is_entry = #keys == 2
+				local is_attack = keys[1] == "Weapons" and keys[3] == "actions" and #keys == 5
+
+				for _, place in ipairs(places(keys)) do
+					if is_entry and (keys[1] ~= "DamageProfileTemplates" or place.section.label == "") then
+						place.group.note = note.text
+					elseif is_entry or is_attack then
+						place.section.note = note.text
+					else
+						table.insert(place.section.bullets, string.format("%s: %s", place.field, one_line(note.text)))
+					end
+				end
+			end
+		end
+	end
+
+	-- Weapons first, then the other entries; A-Z within each
+	table.sort(group_list, function (a, b)
+		if a.is_weapon ~= b.is_weapon then
+			return a.is_weapon
+		end
+
+		return a.title < b.title
+	end)
+
+	local out, count, heading = {}, 0, nil
+
+	for _, group in ipairs(group_list) do
+		local group_heading = group.is_weapon and "## Weapons" or "## Other"
+
+		if group_heading ~= heading then
+			heading = group_heading
+			out[#out + 1] = heading
+		end
+
+		out[#out + 1] = "**" .. group.title .. "**"
+		out[#out + 1] = ""
+
+		if group.note then
+			out[#out + 1] = "*" .. one_line(group.note) .. "*"
+			count = count + 1
+		end
+
+		table.sort(group.section_list, function (a, b)
+			return a.label < b.label
+		end)
+
+		for _, section in ipairs(group.section_list) do
+			local prefix = section.label ~= "" and (section.label .. ": ") or ""
+
+			if section.note then
+				out[#out + 1] = "*" .. prefix .. one_line(section.note) .. "*"
+				count = count + 1
+			end
+
+			table.sort(section.bullets)
+
+			for _, bullet in ipairs(section.bullets) do
+				out[#out + 1] = "* " .. prefix .. bullet
+				count = count + 1
+			end
+		end
+
+		out[#out + 1] = ""
 	end
 
 	return table.concat(out, "\n"), count
