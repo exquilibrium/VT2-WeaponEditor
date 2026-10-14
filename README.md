@@ -109,9 +109,11 @@ it works with menus open too).
 ## Finding things
 
 - The editor opens on your **wielded weapon**. "Wielded weapon" re-selects it.
-- **Search** finds weapon templates, `[explosion]` entries (`ExplosionTemplates`),
-  `[spread]` entries (`SpreadTemplates`) and `[dot]` entries (the DoT templates of
-  `BuffTemplates`).
+- **Search** finds weapon templates, `[profile]` entries (`DamageProfileTemplates`),
+  `[explosion]` entries (`ExplosionTemplates`), `[spread]` entries (`SpreadTemplates`) and
+  `[dot]` entries (the DoT templates of `BuffTemplates`), listed in that order.
+- A profile opened from search shows the attacks **used by** it (**open weapon**,
+  **breakpoints**), then the same view as under an attack, minus forking.
 - A weapon shows its **actions** (action_one, action_two, ...) and their sub-actions, each
   labelled with the damage profile(s) it uses. Other template fields (dodge buffs, ammo,
   block angles, stamina) are under **other template fields**.
@@ -319,13 +321,13 @@ Notes record why a balance edit was made, for dev comments and patch notes.
   the style of TourneyBalance's `$BEGIN_TB` patch notes, to tidy up and paste:
 
       ## Weapons
-      **Halberd (es_halberd_template)**
+      **two_handed_halberds_template_1**
 
       *the weapon's note*
       *action_one.heavy_attack_left: the attack's note*
       * action_one.heavy_attack_left: Increased damage_profile to tb_x (from heavy_slashing). the field's note
 
-  One heading per weapon (its in-game name, template in brackets), a bullet per change with
+  One heading per weapon (its template name), a bullet per change with
   "Increased/Reduced/Changed ... to X (from Y)", "Added" or "Removed". "from" is the MB value
   before the edit; for a note whose edit already landed, the value it remembered when written.
   Damage profile changes are listed under every weapon whose attacks use the profile, labelled

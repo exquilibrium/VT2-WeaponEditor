@@ -37,6 +37,10 @@ local SEARCH_SOURCES = {
 		prefix = "",
 	},
 	{
+		root = "DamageProfileTemplates",
+		prefix = "[profile] ",
+	},
+	{
 		root = "ExplosionTemplates",
 		prefix = "[explosion] ",
 	},
@@ -1327,7 +1331,7 @@ local function draw_template_picker(editor)
 
 	Imgui.push_item_width(SEARCH_WIDTH)
 
-	s.filter = Imgui.input_text("Search weapons / explosions / spread / dots##template_filter", s.filter or "")
+	s.filter = Imgui.input_text("Search weapons / profiles / explosions / spread / dots##template_filter", s.filter or "")
 
 	Imgui.pop_item_width()
 
@@ -1339,20 +1343,27 @@ local function draw_template_picker(editor)
 		local needle = s.filter:lower()
 		local results = {}
 
-		for _, source in ipairs(SEARCH_SOURCES) do
+		for source_index, source in ipairs(SEARCH_SOURCES) do
 			for name, entry in pairs(rawget(_G, source.root) or {}) do
 				if type(name) == "string" and name:lower():find(needle, 1, true) and is_editable_entry(source.root, name, entry) then
 					results[#results + 1] = {
 						label = source.prefix .. name,
 						root = source.root,
 						name = name,
+						source_index = source_index,
 					}
 				end
 			end
 		end
 
+		-- In SEARCH_SOURCES order (weapons first), A-Z within each: the list is cut at
+		-- MAX_SEARCH_RESULTS, and the many profiles must not push the weapons out
 		table.sort(results, function (a, b)
-			return a.label < b.label
+			if a.source_index ~= b.source_index then
+				return a.source_index < b.source_index
+			end
+
+			return a.name < b.name
 		end)
 
 		for i = #results, MAX_SEARCH_RESULTS + 1, -1 do
@@ -1401,6 +1412,49 @@ local function draw_template_picker(editor)
 end
 
 -- An ExplosionTemplates / SpreadTemplates entry on its own
+--[[
+	A damage profile opened from search: its heading, the attacks using it (open the weapon, or
+	its breakpoints), then the same view as under an attack - without forking, which needs an
+	attack to point at the fork.
+]]
+local function draw_profile_entry(editor, profile_name)
+	local profile_keys = { "DamageProfileTemplates", profile_name }
+	local users = cached_profile_users(editor, profile_name)
+
+	Imgui.text("DamageProfileTemplates." .. profile_name)
+	draw_tree_markers(editor, profile_keys)
+
+	if Imgui.tree_node(string.format("used by (%d attacks)###used_by%s", #users, profile_name), true) then
+		if #users == 0 then
+			text_colored("No weapon attack names this profile (an explosion, DoT or career skill may still use it).", INFO_COLOR)
+		end
+
+		for _, user in ipairs(users) do
+			-- user.keys end at the damage_profile field; the attack is the sub-action above it
+			local sub_keys = core.sub_keys(user.keys, 5)
+			local user_path = core.format_path(user.keys)
+
+			if Imgui.small_button("open weapon##used_by_open" .. user_path) then
+				editor.select_template(user.keys[2])
+			end
+
+			Imgui.same_line()
+
+			if Imgui.small_button("breakpoints##used_by_bp" .. user_path) then
+				editor.show_breakpoints(sub_keys)
+			end
+
+			Imgui.same_line()
+			Imgui.text(core.format_relative(user.keys, 2))
+		end
+
+		Imgui.tree_pop()
+	end
+
+	Imgui.separator()
+	draw_profile(editor, profile_name, nil)
+end
+
 local function draw_global_entry(editor, root, name)
 	local entry = rawget(_G, root)[name]
 	local entry_path = root .. "." .. name
@@ -1657,7 +1711,9 @@ local function draw_body(editor)
 
 	local selected_global = editor.selected_global
 
-	if selected_global and type(rawget(_G, selected_global.root)[selected_global.name]) == "table" then
+	if selected_global and selected_global.root == "DamageProfileTemplates" and type(DamageProfileTemplates[selected_global.name]) == "table" then
+		draw_profile_entry(editor, selected_global.name)
+	elseif selected_global and type(rawget(_G, selected_global.root)[selected_global.name]) == "table" then
 		draw_global_entry(editor, selected_global.root, selected_global.name)
 	elseif editor.selected_template and Weapons[editor.selected_template] then
 		draw_template(editor, editor.selected_template)

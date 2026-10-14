@@ -647,15 +647,17 @@ end
 	$BEGIN_TB ... $END_TB blocks), to tidy up and paste. A draft (export.new_patch_draft) takes
 	changes and notes and renders them grouped by weapon:
 
-		**Halberd (es_halberd_template)**            ("## Halberd" in the "site" style)
+		**two_handed_halberds_template_1**            ("## two_handed_halberds_template_1" in the "site" style)
 
 		*the weapon's note*
 		*action_one.heavy_attack_left: the attack's note*
 		* action_one.heavy_attack_left: Increased power to 0.6 (from 0.5, +20%). the field's note
 
-	A damage profile's changes are listed under every weapon whose attacks use it, labelled with
-	those attacks. Other entries get their own heading ("**Explosion x**"). /we_export_notes drafts
-	the pending edits (export.patch_notes); the weapon sweep (we_sweep.lua) drafts official -> MB.
+	Weapons go by template name: an item looked up per template is an arbitrary one of its items
+	(skins, career variants), whose name often isn't the weapon's. A damage profile's changes are
+	listed under every weapon whose attacks use it, labelled with those attacks. Other entries get
+	their own heading ("**Explosion x**"). /we_export_notes drafts the pending edits
+	(export.patch_notes); the weapon sweep (we_sweep.lua) drafts official -> MB.
 ]]
 
 local ENTRY_TITLES = {
@@ -664,31 +666,6 @@ local ENTRY_TITLES = {
 	BuffTemplates = "DoT",
 	DamageProfileTemplates = "Damage profile",
 }
-
--- Weapon template -> its localized name (from the first item using it)
-function export.weapon_display_names()
-	local names = {}
-	local localize = rawget(_G, "Localize")
-
-	if not localize then
-		return names
-	end
-
-	for _, item in pairs(ItemMasterList) do
-		local template = type(item) == "table" and item.template
-
-		if type(template) == "string" and not names[template] and type(item.display_name) == "string" then
-			local ok, localized = pcall(localize, item.display_name)
-
-			-- A missing localization comes back as "<key>"
-			if ok and type(localized) == "string" and localized ~= "" and not localized:find("<", 1, true) then
-				names[template] = localized
-			end
-		end
-	end
-
-	return names
-end
 
 -- A shown value (core.format_value) as prose: strings without their quotes
 local function plain(text)
@@ -728,13 +705,12 @@ Draft.__index = Draft
 
 --[[
 	A patch-note draft. only_template: keep just that weapon (a damage profile's changes then go
-	only under it). display_names: export.weapon_display_names(), when already built.
+	only under it).
 ]]
-function export.new_patch_draft(editor, only_template, display_names)
+function export.new_patch_draft(editor, only_template)
 	return setmetatable({
 		editor = editor,
 		only_template = only_template,
-		display_names = display_names or export.weapon_display_names(),
 		groups = {},
 		group_list = {},
 	}, Draft)
@@ -746,7 +722,6 @@ function Draft:group_for(key, title, is_weapon)
 	if not group then
 		group = {
 			title = title,
-			short_title = title,
 			is_weapon = is_weapon,
 			sections = {},
 			section_list = {},
@@ -774,12 +749,7 @@ function Draft:section_for(group, key, label)
 end
 
 function Draft:weapon_group(template_name)
-	local display_name = self.display_names[template_name] or template_name
-	local group = self:group_for("Weapons." .. template_name, string.format("%s (%s)", display_name, template_name), true)
-
-	group.short_title = display_name
-
-	return group
+	return self:group_for("Weapons." .. template_name, template_name, true)
 end
 
 -- Where something at keys is listed: { group, section, field (relative label) }, one place per
@@ -946,7 +916,7 @@ function Draft:render(style)
 			local title_line
 
 			if style == "site" then
-				title_line = group.is_weapon and ("## " .. group.short_title) or ("**" .. group.title .. "**")
+				title_line = group.is_weapon and ("## " .. group.title) or ("**" .. group.title .. "**")
 			else
 				local group_heading = group.is_weapon and "## Weapons" or "## Other"
 

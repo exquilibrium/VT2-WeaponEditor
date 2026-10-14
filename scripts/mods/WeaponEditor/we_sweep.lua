@@ -5,14 +5,16 @@
 	/we_sweep_weapons drafts, for every weapon the balance mod changes, everything that differs
 	from official (official -> MB, as the files load - so it refuses to run with pending edits):
 
-		-- ======== Halberd (two_handed_halberds_template_1) ========
-		$BEGIN_TB ... $END_TB block       patch notes in a block comment, "## Halberd" (the site's
+		-- ======== two_handed_halberds_template_1 ========
+		$BEGIN_TB ... $END_TB block       patch notes in a block comment, "## <template name>" (the site's
 		                                  weapon changes page)
 		Weapons.x... = v -- official: o   the template's changed fields
 		NewDamageProfileTemplates.mb_x    the balance mod's own profiles, whole blocks with official
 		                                  comments (as /we_export prints them)
-		DamageProfileTemplates.x... = v   official profiles it changed in place, field by field -
-		                                  flagged when the field is inside a shared preset
+		DamageProfileTemplates.x... = v   official profiles it changed in place, field by field. A
+		                                  field inside a PowerLevelTemplates preset gets a comment
+		                                  naming the other profiles holding that table (the line
+		                                  changes them too), or "only this profile uses it"
 		ExplosionTemplates.x... = v       explosion / spread / DoT entries the weapon references
 
 	A weapon covers the damage profiles its attacks name and the entries it references. A profile
@@ -125,9 +127,71 @@ local function weapon_category(template)
 	return "other"
 end
 
+local MAX_LISTED_HOLDERS = 6
+
+-- Whether t holds `target` somewhere below it (the table itself, not an equal copy)
+local function holds_table(t, target, depth)
+	for key, value in pairs(t) do
+		if value == target then
+			return true
+		elseif type(value) == "table" and depth < 4 and not core.EXCLUDED_KEYS[key] and holds_table(value, target, depth + 1) then
+			return true
+		end
+	end
+
+	return false
+end
+
+-- Names of the damage profiles holding this exact table (a PowerLevelTemplates preset or part of
+-- one), sorted; cached per table for one sweep
+local function profiles_holding(target, cache)
+	if not cache[target] then
+		local names = {}
+
+		for name, profile in pairs(DamageProfileTemplates) do
+			if type(profile) == "table" and holds_table(profile, target, 1) then
+				names[#names + 1] = name
+			end
+		end
+
+		table.sort(names)
+
+		cache[target] = names
+	end
+
+	return cache[target]
+end
+
+-- The comment above a line writing into a PowerLevelTemplates preset: harmless when only this
+-- profile holds it, otherwise naming the other profiles the line changes too
+local function preset_comment(preset, holders, profile_name)
+	local others = {}
+
+	for _, name in ipairs(holders) do
+		if name ~= profile_name then
+			others[#others + 1] = name
+		end
+	end
+
+	if #others == 0 then
+		return string.format("-- in preset %s (only this profile uses it)", preset)
+	end
+
+	local listed = {}
+
+	for i = 1, math.min(#others, MAX_LISTED_HOLDERS) do
+		listed[i] = others[i]
+	end
+
+	local more = #others > MAX_LISTED_HOLDERS and string.format(" and %d more", #others - MAX_LISTED_HOLDERS) or ""
+
+	return string.format("-- in shared preset %s: also changes %s%s (%d profiles)", preset, table.concat(listed, ", "), more, #holders)
+end
+
 -- Lua lines for changes found by collect_changes, with official comments. A change inside a
--- shared PowerLevelTemplates preset is flagged: assigning it through one profile changes them all.
-local function change_lines(editor, changes, out)
+-- PowerLevelTemplates preset says which other profiles it reaches: assigning it through one
+-- profile changes every profile holding that table.
+local function change_lines(editor, changes, out, holders_cache)
 	for _, change in ipairs(changes) do
 		local path = core.format_path(change.keys)
 		local official_text = type(change.official) == "table" and "<table>" or core.format_value(change.official)
@@ -135,7 +199,9 @@ local function change_lines(editor, changes, out)
 		local preset = type(parent) == "table" and editor.preset_name(parent)
 
 		if preset then
-			out[#out + 1] = string.format("-- in shared preset %s: this line changes every profile using it", preset)
+			local profile_name = change.keys[1] == "DamageProfileTemplates" and change.keys[2] or nil
+
+			out[#out + 1] = preset_comment(preset, profiles_holding(parent, holders_cache), profile_name)
 		end
 
 		if change.kind == "removed" then
@@ -193,8 +259,8 @@ function sweep.build(editor)
 	})
 
 	local authored_profiles = editor.authored_profiles() or {}
-	local display_names = export.weapon_display_names()
 	local printed_profiles, printed_entries = {}, {} -- name -> the template it was printed under
+	local holders_cache = {} -- preset table -> profiles holding it (change_lines)
 	local weapons, new_templates = {}, {}
 
 	for template_name, template in pairs(Weapons) do
@@ -209,7 +275,6 @@ function sweep.build(editor)
 					template = template,
 					official = official,
 					category = weapon_category(template),
-					display_name = display_names[template_name] or template_name,
 				}
 			end
 		end
@@ -218,10 +283,6 @@ function sweep.build(editor)
 	table.sort(weapons, function (a, b)
 		if a.category ~= b.category then
 			return CATEGORY_ORDER[a.category] < CATEGORY_ORDER[b.category]
-		end
-
-		if a.display_name ~= b.display_name then
-			return a.display_name < b.display_name
 		end
 
 		return a.name < b.name
@@ -328,7 +389,7 @@ function sweep.build(editor)
 			end
 
 			-- Patch notes
-			local draft = export.new_patch_draft(cached_editor, weapon.name, display_names)
+			local draft = export.new_patch_draft(cached_editor, weapon.name)
 
 			add_changes_to_draft(draft, template_changes)
 
@@ -343,7 +404,7 @@ function sweep.build(editor)
 			local notes_text = draft:render("site")
 
 			out[#out + 1] = ""
-			out[#out + 1] = string.format("-- ======== %s (%s) ========", weapon.display_name, weapon.name)
+			out[#out + 1] = string.format("-- ======== %s ========", weapon.name)
 			out[#out + 1] = ""
 			out[#out + 1] = "--[["
 			out[#out + 1] = "\t$BEGIN_TB"
@@ -359,7 +420,7 @@ function sweep.build(editor)
 			if #template_changes > 0 then
 				out[#out + 1] = ""
 
-				change_lines(cached_editor, template_changes, out)
+				change_lines(cached_editor, template_changes, out, holders_cache)
 			end
 
 			-- Damage profiles
@@ -384,7 +445,7 @@ function sweep.build(editor)
 					out[#out + 1] = ""
 					out[#out + 1] = "-- " .. profile_name .. " (official profile, changed in place)"
 
-					change_lines(cached_editor, changes, out)
+					change_lines(cached_editor, changes, out, holders_cache)
 				end
 			end
 
@@ -404,7 +465,7 @@ function sweep.build(editor)
 					printed_entries[entry_key] = weapon.name
 					out[#out + 1] = "-- " .. entry_key
 
-					change_lines(cached_editor, entry.changes, out)
+					change_lines(cached_editor, entry.changes, out, holders_cache)
 				end
 			end
 		end
