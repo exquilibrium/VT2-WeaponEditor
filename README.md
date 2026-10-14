@@ -265,14 +265,14 @@ first attack). The grid shows, per breed and target index:
     and the sheet ignores stacks and Opportunist.
   - Not modelled: enemies ignoring staggers during specific attacks (Chaos Warrior overheads
     etc.), boss stagger immunity, repeat-heavy immunity, shield blocks, buffs on the target.
-- **hit log**: tick "record hits" to log real hits (damage dealt, stagger multiplier, damage
-  buff multiplier, hits to kill). Each hit is checked twice: the damage formula, and the damage
+- **hit log**: tick "log damage" and/or "log stagger" to log real hits. Damage: damage dealt, stagger multiplier, damage
+  buff multiplier, hits to kill. Each hit is checked twice: the damage formula, and the damage
   buff step that runs after it (`apply_buffs_to_damage`). Either disagreeing is flagged in red.
   Without a registered balance mod only the final damage is visible, so the formula check is
   skipped.
   Known gaps: instakill perks (Killing Shot, Murderous Prowess), buffs on the target (poison,
   bleed, balefire, target health), ranged falloff - these show up as mismatches.
-  Staggers are logged too: the real tier and strength next to the stagger sheet's prediction
+  Stagger ("log stagger"): the real tier and strength next to the stagger sheet's prediction
   for the enemy's actual stacks and whether it was attacking. Expect mismatches where an
   attack has its own stagger rules (ignored staggers, its own stagger reduction) or a breed's
   repeat-heavy immunity kicks in.

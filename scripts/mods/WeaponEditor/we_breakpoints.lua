@@ -690,7 +690,9 @@ end
 ]]
 
 local hit_log = {
-	enabled = false,
+	-- Recorded separately: usually only one of the two is wanted
+	log_damage = false,
+	log_stagger = false,
 	entries = {},
 	stagger_entries = {},
 	last_key = nil,
@@ -714,7 +716,7 @@ local function profile_name(damage_profile)
 end
 
 function breakpoints.on_calculate_damage(final_damage, base_damage, damage_output, target_unit, attacker_unit, hit_zone_name, original_power_level, boost_curve, boost_damage_multiplier, is_critical_strike, damage_profile, target_index, backstab_multiplier, damage_source)
-	if not hit_log.enabled or not target_unit or not damage_profile or attacker_unit ~= prediction.local_player_unit() then
+	if not hit_log.log_damage or not target_unit or not damage_profile or attacker_unit ~= prediction.local_player_unit() then
 		return
 	end
 
@@ -771,7 +773,7 @@ end
 -- records the buffed damage on the hit's entry. Runs for every damage event in the game, so
 -- with the hit log off it's a plain tail call.
 function breakpoints.on_apply_buffs_to_damage(func, ...)
-	if not hit_log.enabled then
+	if not hit_log.log_damage then
 		return func(...)
 	end
 
@@ -804,7 +806,7 @@ end
 -- the local player's staggers with the prediction for them. The prediction runs after the
 -- real calculation, not inside it, so procs paired around a calculation never nest.
 function breakpoints.on_calculate_stagger(func, ...)
-	if not hit_log.enabled then
+	if not hit_log.log_stagger then
 		return func(...)
 	end
 
@@ -1191,7 +1193,11 @@ local function draw_grid(grid, options)
 end
 
 local function draw_hit_log()
-	hit_log.enabled = Imgui.checkbox("record hits##bp_hitlog", hit_log.enabled)
+	hit_log.log_damage = Imgui.checkbox("log damage##bp_hitlog_damage", hit_log.log_damage)
+
+	Imgui.same_line()
+
+	hit_log.log_stagger = Imgui.checkbox("log stagger##bp_hitlog_stagger", hit_log.log_stagger)
 
 	Imgui.same_line()
 

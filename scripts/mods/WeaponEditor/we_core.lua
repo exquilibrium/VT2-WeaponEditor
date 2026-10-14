@@ -111,6 +111,11 @@ function core.deep_equal(a, b)
 end
 
 function core.values_equal(a, b)
+	-- First: math.huge - math.huge is NaN, which the tolerance below would call different
+	if a == b then
+		return true
+	end
+
 	if type(a) == "number" and type(b) == "number" then
 		return math.abs(a - b) <= 1e-6
 	end

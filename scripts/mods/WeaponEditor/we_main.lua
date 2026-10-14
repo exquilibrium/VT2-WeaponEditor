@@ -1968,6 +1968,9 @@ mod:command("we_export", "Weapon editor: copy all edits as Lua (with official-va
 	editor.export()
 end)
 
+-- TEMPORARY (weapon file cleanup): /we_sweep_weapons - delete this line together with we_sweep.lua
+require("scripts/mods/WeaponEditor/we_sweep").register(mod, editor, put_on_clipboard)
+
 mod:command("we_export_notes", "Weapon editor: copy a patch-note draft (edits and their notes, as markdown) to the clipboard.", function ()
 	editor.export_patch_notes()
 end)
