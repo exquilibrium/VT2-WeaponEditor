@@ -72,8 +72,10 @@ if weapon_editor and weapon_editor.register_balance_mod then
 		profile_prefix = "mb_",                   -- forked profile names
 		authored_profiles_global = "NewDamageProfileTemplates", -- whole-block profile export + forks
 		export_key_order = { profile = { order = {...}, unknown_before = "default_target" }, target = {...} },
+		patch_notes_markers = { "$BEGIN_MB", "$END_MB" }, -- around each weapon's notes in /we_sweep_weapons
 		damage_calculation = do_damage_calculation, -- its own formula, if it replaces the game's
-		stagger_multiplier = function (damage_profile, stagger_number, attacker_unit, difficulty_settings) ... end,
+		stagger_multiplier = function (damage_profile, stagger_number, attacker_unit, difficulty_settings, target_index, hit_zone_name, is_critical_strike) ... end,
+		stagger_calculation = do_stagger_calculation, -- its own, if it replaces the game's
 		add_calculate_damage_observer = function (observer) ... end,      -- hit log, formula step
 		add_apply_buffs_to_damage_wrapper = function (wrapper) ... end,   -- hit log, damage buff step
 		-- where a former built-in editor saved its edits (moved over once, at the first launch)
@@ -81,6 +83,11 @@ if weapon_editor and weapon_editor.register_balance_mod then
 	})
 end
 ```
+
+A balance mod without an `on_all_mods_loaded` of its own to call this from can instead leave
+the same settings table in the global `WEAPON_EDITOR_BALANCE_MOD` from its support file; the
+editor registers it once all mods have loaded. Class Balance does this (its `DevToolsSupport.lua`),
+TourneyBalance calls `register_balance_mod` (`debugging/dev_tools_support.lua`).
 
 The rest of this guide uses that example registration: its baseline label is "MB", forks are
 named `mb_...` and its profile blocks are `NewDamageProfileTemplates.mb_x`.
@@ -227,9 +234,12 @@ first attack). The grid shows, per breed and target index:
   - **extra damage %** (damage sheet): multiplies the result like a debuff on the enemy
     (Exploit Weakness, Bulwark's 10% debuff), separately from your own damage buffs. Bulwark's
     stagger mark (+1 stagger count) is separate: add it with stagger stacks.
-  - **witch hunt (tagged)** (damage sheet): the tag's damage-taken debuff (+20%), times
+  - **whc tag*** (damage sheet): the tag's damage-taken debuff (+20%), times
     Templar's Knowledge's +5% when you have the talent. TB's extra +25% Templar's Knowledge
     bonus sits inside its damage formula and needs a real target, so add it with extra damage %.
+  - **bulwark** (damage sheet): the official Bulwark debuff (`tank_unbalance_buff`), +10% added
+    to the stagger damage bonus (also at 0 stacks). For balance mods that still use
+    it, such as Class Balance; TB replaced it with a plain 10% debuff (use extra damage %).
   - **extra stagger power %** (stagger sheet): works like Staggering Force / Bulwark,
     added to the ones you have.
   - The active ones are listed in green above the grid.

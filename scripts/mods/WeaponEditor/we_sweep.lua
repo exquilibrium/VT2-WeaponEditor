@@ -6,8 +6,10 @@
 	from official (official -> MB, as the files load - so it refuses to run with pending edits):
 
 		-- ======== two_handed_halberds_template_1 ========
-		$BEGIN_TB ... $END_TB block       patch notes in a block comment, "## <template name>" (the site's
-		                                  weapon changes page)
+		patch notes                       in a block comment, "## <template name>" and its changes,
+		                                  between the balance mod's patch_notes_markers when it has
+		                                  them (TB: $BEGIN_TB ... $END_TB, read by its site's weapon
+		                                  changes page)
 		Weapons.x... = v -- official: o   the template's changed fields
 		NewDamageProfileTemplates.mb_x    the balance mod's own profiles, whole blocks with official
 		                                  comments (as /we_export prints them)
@@ -402,18 +404,26 @@ function sweep.build(editor)
 			end
 
 			local notes_text = draft:render("site")
+			local markers = editor.host.patch_notes_markers
+			local indent = markers and "\t\t" or "\t"
 
 			out[#out + 1] = ""
 			out[#out + 1] = string.format("-- ======== %s ========", weapon.name)
 			out[#out + 1] = ""
 			out[#out + 1] = "--[["
-			out[#out + 1] = "\t$BEGIN_TB"
 
-			for line in (notes_text .. "\n"):gmatch("(.-)\n") do
-				out[#out + 1] = line ~= "" and ("\t\t" .. line) or ""
+			if markers then
+				out[#out + 1] = "\t" .. markers[1]
 			end
 
-			out[#out + 1] = "\t$END_TB"
+			for line in (notes_text .. "\n"):gmatch("(.-)\n") do
+				out[#out + 1] = line ~= "" and (indent .. line) or ""
+			end
+
+			if markers then
+				out[#out + 1] = "\t" .. markers[2]
+			end
+
 			out[#out + 1] = "]]"
 
 			-- Lua: the template's own changes

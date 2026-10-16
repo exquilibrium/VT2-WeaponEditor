@@ -231,6 +231,7 @@ local function default_options()
 		stagger_index = 1,
 		opportunist = false,
 		witch_hunt = false,
+		bulwark = false,
 		-- Simulated buffs, in percent
 		power_percent = 0,
 		damage_percent = 0,
@@ -282,6 +283,7 @@ local function grid_context(options)
 		stagger_power_bonus = (options.stagger_power_percent or 0) / 100,
 		witch_hunt_multiplier = witch_hunt_multiplier,
 		damage_multiplier = (1 + (options.damage_percent or 0) / 100) * witch_hunt_multiplier,
+		unbalanced_bonus = options.bulwark and prediction.bulwark_bonus() or nil,
 		target_count = options.target_count_index,
 		categories = options.categories,
 		-- Shared with the combo steps' contexts: the first error a cell hit, shown above the grid
@@ -352,7 +354,7 @@ end
 local function hand_damages(ctx, hand, breed, target_index)
 	return per_variant(ctx, hand, breed, function (profile)
 		-- Target 1 is the swing's first hit (first_melee_hit_damage buffs)
-		return (prediction.predict(ctx.unit, ctx.damage_source, ctx.power_level, profile, target_index, ctx.critical, breed, ctx.hit_zone_name, ctx.difficulty_level, 0, 1, ctx.stagger_number, target_index == 1, ctx.power_bonus, ctx.damage_multiplier))
+		return (prediction.predict(ctx.unit, ctx.damage_source, ctx.power_level, profile, target_index, ctx.critical, breed, ctx.hit_zone_name, ctx.difficulty_level, 0, 1, ctx.stagger_number, target_index == 1, ctx.power_bonus, ctx.damage_multiplier, ctx.unbalanced_bonus))
 	end)
 end
 
@@ -647,6 +649,10 @@ local function simulated_buffs_text(ctx, stagger)
 		end
 
 		parts[#parts + 1] = text
+	end
+
+	if not stagger and ctx.unbalanced_bonus then
+		parts[#parts + 1] = string.format("%+g%% stagger bonus (bulwark)", ctx.unbalanced_bonus * 100)
 	end
 
 	return #parts > 0 and "simulated: " .. table.concat(parts, ", ") or nil
@@ -985,7 +991,18 @@ local function draw_options(options)
 	else
 		Imgui.same_line()
 
-		options.witch_hunt = Imgui.checkbox("witch hunt (tagged)##bp_witch_hunt", options.witch_hunt)
+		options.witch_hunt = Imgui.checkbox("whc tag##bp_witch_hunt", options.witch_hunt)
+
+		Imgui.same_line()
+
+		options.bulwark = Imgui.checkbox("bulwark##bp_bulwark", options.bulwark)
+
+		if Imgui.is_item_hovered() then
+			Imgui.begin_tool_tip()
+			Imgui.text(string.format("Enemy debuffed by Bulwark (tank_unbalance_buff): +%g%% to the stagger damage bonus.", prediction.bulwark_bonus() * 100))
+			Imgui.text("Only where the balance mod still applies that buff - TB replaced it with a plain damage taken debuff (use extra damage % there).")
+			Imgui.end_tool_tip()
+		end
 	end
 
 	-- Simulated buffs, on top of the ones you have
@@ -1048,6 +1065,7 @@ local function options_key(editor, options)
 		tostring(options.sheet_index),
 		tostring(options.opportunist),
 		tostring(options.witch_hunt),
+		tostring(options.bulwark),
 		tostring(options.power_percent),
 		tostring(options.damage_percent),
 		tostring(options.stagger_power_percent),

@@ -189,6 +189,18 @@ function prediction.witch_hunt_multiplier(attacker_unit)
 	return multiplier
 end
 
+--[[
+	Bonus to the stagger damage bonus of an enemy debuffed by Bulwark (tank_unbalance_buff, an
+	unbalanced_damage_taken stacking_bonus): the game adds it to stagger stacks x per-stack bonus.
+	Read from the live template; 0.1 if it's gone.
+]]
+function prediction.bulwark_bonus()
+	local template = rawget(BuffTemplates, "tank_unbalance_buff")
+	local buff = template and template.buffs and template.buffs[1]
+
+	return buff and tonumber(buff.bonus) or 0.1
+end
+
 local function power_bonus_stats(power_bonus)
 	return power_bonus and power_bonus ~= 0 and {
 		power_level = power_bonus,
@@ -199,8 +211,9 @@ end
 -- base damage (the formula alone) and the damage before attacker buffs. first_hit: the
 -- first enemy a swing hits, which is what first_melee_hit_damage buffs check. power_bonus:
 -- extra power (0.1 = +10%, like a power buff); damage_multiplier: on top of everything,
--- like a debuff on the enemy (Witch Hunt, the custom damage option).
-function prediction.predict(attacker_unit, damage_source, power_level, damage_profile, target_index, is_critical_strike, breed, hit_zone_name, difficulty_level, boost_damage_multiplier, backstab_multiplier, stagger_number, first_hit, power_bonus, damage_multiplier)
+-- like a debuff on the enemy (Witch Hunt, the custom damage option); unbalanced_bonus: the
+-- enemy's unbalanced_damage_taken (prediction.bulwark_bonus).
+function prediction.predict(attacker_unit, damage_source, power_level, damage_profile, target_index, is_critical_strike, breed, hit_zone_name, difficulty_level, boost_damage_multiplier, backstab_multiplier, stagger_number, first_hit, power_bonus, damage_multiplier, unbalanced_bonus)
 	local editor = prediction.editor
 	local do_damage_calculation = editor and editor.host.damage_calculation
 	local target_settings = damage_profile.targets and damage_profile.targets[target_index] or damage_profile.default_target
@@ -234,7 +247,14 @@ function prediction.predict(attacker_unit, damage_source, power_level, damage_pr
 	local final_damage = base_damage
 
 	if not damage_profile.is_dot and editor then
-		final_damage = base_damage * editor.stagger_multiplier(damage_profile, stagger_number or 0, attacker_unit, difficulty_settings)
+		local stagger_multiplier = editor.stagger_multiplier(damage_profile, stagger_number or 0, attacker_unit, difficulty_settings, target_index, hit_zone_name, is_critical_strike)
+
+		-- Added to the stagger bonus the same way by the game, TB and Class Balance
+		if unbalanced_bonus and not damage_profile.no_stagger_damage_reduction_ranged then
+			stagger_multiplier = stagger_multiplier + unbalanced_bonus
+		end
+
+		final_damage = base_damage * stagger_multiplier
 	end
 
 	local buffed_damage = prediction.attacker_buffed_damage(final_damage, attacker_unit, damage_source, damage_profile, first_hit) * (damage_multiplier or 1)
@@ -252,8 +272,9 @@ end
 	called with a stand-in blackboard. If that lookup fails, the sheet falls back to the wrapper,
 	which always assumes a fresh enemy that isn't attacking.
 
-	Balance mods don't register anything for this: they change stagger through weapon data and
-	buffs, both read live by the game's function.
+	Balance mods usually change stagger only through weapon data and buffs, both read live by
+	the game's function. One that replaces the function registers its own (stagger_calculation),
+	which is then used instead - it takes the same arguments.
 ]]
 
 local STAGGER_TYPES = require("scripts/utils/stagger_types")
@@ -316,8 +337,15 @@ end
 local stagger_calculation = nil
 local stagger_lookup_done = false
 
--- The game's do_stagger_calculation, or nil when it couldn't be found (looked up once)
+-- The balance mod's do_stagger_calculation, else the game's, or nil when it couldn't be found
+-- (looked up once)
 function prediction.stagger_calculation()
+	local registered = prediction.editor and prediction.editor.host.stagger_calculation
+
+	if registered then
+		return registered
+	end
+
 	if not stagger_lookup_done then
 		stagger_lookup_done = true
 		stagger_calculation = find_local_function(DamageUtils.calculate_stagger_player_tooltip, "do_stagger_calculation") or find_local_function(DamageUtils.calculate_stagger_player, "do_stagger_calculation")

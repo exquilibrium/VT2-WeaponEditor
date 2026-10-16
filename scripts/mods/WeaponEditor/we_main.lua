@@ -79,6 +79,8 @@ local INPUT_CAPTURE_OWNER = "WeaponEditor"
 
 -- Name of the global a balance mod fills with a vanilla snapshot when it loads before the editor
 local VANILLA_SNAPSHOT_GLOBAL = "WEAPON_EDITOR_VANILLA_SNAPSHOT"
+-- Registration settings a balance mod can leave instead of calling register_balance_mod
+local PENDING_REGISTRATION_GLOBAL = "WEAPON_EDITOR_BALANCE_MOD"
 
 local function report(format, ...)
 	local message = string.format(format, ...)
@@ -174,6 +176,10 @@ state.notes = state.notes or {}
 
 		get_mod("WeaponEditor").register_balance_mod({ ... })
 
+	or, when it has no on_all_mods_loaded of its own to call from, leaves the same settings in
+	the global WEAPON_EDITOR_BALANCE_MOD while it loads; the editor registers them once all mods
+	have loaded (an explicit register_balance_mod call wins).
+
 	Every field is optional; missing ones fall back to the game's own behavior:
 		name                      key for saved edits/forks (edits of different mods never mix)
 		label                     short name shown for its baseline column/values ("MB")
@@ -182,9 +188,14 @@ state.notes = state.notes or {}
 		                          its own setup code ("NewDamageProfileTemplates"); enables
 		                          whole-block profile export and forks in that format
 		export_key_order          { profile = {...}, target = {...} } key order for exported blocks
+		patch_notes_markers       { "$BEGIN_X", "$END_X" }: lines the weapon sweep puts around
+		                          each weapon's patch notes (TB's site reads $BEGIN_TB ... $END_TB)
 		damage_calculation        its do_damage_calculation (same arguments as the game's local one)
 		stagger_multiplier        function (damage_profile, stagger_number, attacker_unit,
-		                          difficulty_settings) -> damage multiplier for that stagger count
+		                          difficulty_settings, target_index, hit_zone_name,
+		                          is_critical_strike) -> damage multiplier for that stagger count
+		stagger_calculation       its do_stagger_calculation (same arguments as the game's local
+		                          one), when it replaces the game's
 		add_calculate_damage_observer      function (observer): its calculate_damage observer list
 		add_apply_buffs_to_damage_wrapper  function (wrapper): its apply_buffs_to_damage wrappers
 		legacy_settings_mod, legacy_edits_setting, legacy_forks_setting
@@ -262,10 +273,10 @@ function editor.authored_profiles()
 end
 
 -- Damage multiplier for a stagger count, by the balance mod's rule or the game's
-function editor.stagger_multiplier(damage_profile, stagger_number, attacker_unit, difficulty_settings)
+function editor.stagger_multiplier(damage_profile, stagger_number, attacker_unit, difficulty_settings, target_index, hit_zone_name, is_critical_strike)
 	local stagger_multiplier = host().stagger_multiplier or generic_stagger_multiplier
 
-	return stagger_multiplier(damage_profile, stagger_number, attacker_unit, difficulty_settings)
+	return stagger_multiplier(damage_profile, stagger_number, attacker_unit, difficulty_settings, target_index, hit_zone_name, is_critical_strike)
 end
 
 -- Label for the balance mod's baseline (as loaded from its files)
@@ -1408,8 +1419,8 @@ local function hook_damage_functions_directly()
 	mod:hook(DamageUtils, "apply_buffs_to_damage", breakpoints.on_apply_buffs_to_damage)
 end
 
--- Hit log staggers: balance mods keep the game's stagger calculation, so this is always hooked
--- directly. A plain pass-through while the hit log is off.
+-- Hit log staggers: always hooked directly - a balance mod replacing calculate_stagger_player
+-- does so while it loads, before this runs. A plain pass-through while the hit log is off.
 local stagger_hook_installed = false
 
 local function hook_stagger_function()
@@ -1428,6 +1439,12 @@ local startup_pending = false
 
 local function run_startup()
 	startup_pending = false
+
+	local pending_registration = rawget(_G, PENDING_REGISTRATION_GLOBAL)
+
+	if editor.host == GENERIC_HOST and type(pending_registration) == "table" then
+		mod.register_balance_mod(pending_registration)
+	end
 
 	if not (host().add_calculate_damage_observer and host().add_apply_buffs_to_damage_wrapper) then
 		hook_damage_functions_directly()
