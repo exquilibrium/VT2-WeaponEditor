@@ -861,6 +861,17 @@ local function write_change(keys, kind, payload)
 			return false, string.format("type mismatch (field is %s, got %s)", type(current), type(payload))
 		end
 
+		if type(payload) == "string" then
+			-- Pasted text can carry a trailing \r/\n that makes a name match nothing
+			payload = payload:gsub("^%s+", ""):gsub("%s+$", "")
+
+			-- A damage profile the game can't look up crashes on the next swing
+			if type(keys[#keys]) == "string" and keys[#keys]:find("damage_profile", 1, true)
+				and (not DamageProfileTemplates[payload] or rawget(NetworkLookup.damage_profiles, payload) == nil) then
+				return false, string.format("unknown damage profile \"%s\"", payload)
+			end
+		end
+
 		new_value = payload
 	elseif kind == "table" then
 		if current ~= nil and type(current) ~= "table" then
