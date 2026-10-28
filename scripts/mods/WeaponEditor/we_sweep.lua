@@ -244,6 +244,12 @@ end
 function sweep.build(editor)
 	local state = editor.state
 
+	local mode_problem = editor.edit_mode_problem()
+
+	if mode_problem then
+		return nil, "Can't sweep: " .. mode_problem .. "."
+	end
+
 	if next(state.edits) then
 		return nil, "There are pending edits - the sweep describes the files as loaded. Export or revert them first."
 	end

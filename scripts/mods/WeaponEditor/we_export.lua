@@ -655,7 +655,8 @@ end
 
 	Weapons go by template name: an item looked up per template is an arbitrary one of its items
 	(skins, career variants), whose name often isn't the weapon's. A damage profile's changes are
-	listed under every weapon whose attacks use it, labelled with those attacks. Other entries get
+	listed under every weapon whose attacks use it, once per attack (so two patches' drafts diff
+	line by line), with that attack's own changes. Other entries get
 	their own heading ("**Explosion x**"). /we_export_notes drafts the pending edits
 	(export.patch_notes); the weapon sweep (we_sweep.lua) drafts official -> MB.
 ]]
@@ -739,6 +740,7 @@ function Draft:section_for(group, key, label)
 	if not section then
 		section = {
 			label = label,
+			notes = {},
 			bullets = {},
 		}
 		group.sections[key] = section
@@ -780,7 +782,8 @@ function Draft:places(keys)
 	local field = core.format_relative(keys, 3)
 
 	if root == "DamageProfileTemplates" then
-		-- template -> the attacks of that weapon using the profile
+		-- template -> the attacks of that weapon using the profile, each listed on its own (with
+		-- the attack's other changes) so drafts of two patches diff line by line
 		local attacks, templates = {}, {}
 
 		for _, user in ipairs(self.editor.profile_users(name)) do
@@ -807,13 +810,13 @@ function Draft:places(keys)
 			for _, template in ipairs(templates) do
 				local group = self:weapon_group(template)
 
-				table.sort(attacks[template])
-
-				result[#result + 1] = {
-					group = group,
-					section = self:section_for(group, "profile:" .. name, table.concat(attacks[template], ", ")),
-					field = field,
-				}
+				for _, label in ipairs(attacks[template]) do
+					result[#result + 1] = {
+						group = group,
+						section = self:section_for(group, label, label),
+						field = field,
+					}
+				end
 			end
 
 			return result
@@ -852,7 +855,8 @@ function Draft:add_note(keys, note)
 		if is_entry and (keys[1] ~= "DamageProfileTemplates" or place.section.label == "") then
 			place.group.note = note.text
 		elseif is_entry or is_attack then
-			place.section.note = note.text
+			-- An attack's section also holds the notes of the damage profiles it uses
+			table.insert(place.section.notes, note.text)
 		else
 			table.insert(place.section.bullets, string.format("%s: %s", place.field, one_line(note.text)))
 		end
@@ -876,8 +880,10 @@ local function render_group(group, title_line, out, count)
 	for _, section in ipairs(group.section_list) do
 		local prefix = section.label ~= "" and (section.label .. ": ") or ""
 
-		if section.note then
-			out[#out + 1] = "*" .. prefix .. one_line(section.note) .. "*"
+		table.sort(section.notes)
+
+		for _, note in ipairs(section.notes) do
+			out[#out + 1] = "*" .. prefix .. one_line(note) .. "*"
 			count = count + 1
 		end
 

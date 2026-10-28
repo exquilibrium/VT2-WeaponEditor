@@ -211,6 +211,26 @@ or **Revert all**), so it no longer exports or comes back next session.
 - Projectiles are likewise per-weapon copies that nothing looks up by name, so they are edited
   (and exported) under the weapon's action (`projectile_info`), not as a separate entry.
 
+### Switching numbers
+
+The **Weapon numbers in game** row under the top bar picks which numbers the game uses, for
+comparing a weapon in a live test without editing anything by hand. The current one is in
+brackets:
+
+- **official**: the vanilla snapshot
+- **MB** (the balance mod's label): its files as loaded
+- **MB + edits**: its files plus your edits, the normal mode
+
+Switching swaps the weapon data (`Weapons`, damage profiles, explosions, spread, DoT templates)
+for copies of that snapshot and re-equips the wielded weapon, so dodge and movement change too.
+Your edits are put aside, not lost, and come back with **MB + edits**. Editing, reverting,
+forking, exporting and the weapon sweep only work in that mode: in the other two the window is
+read-only, showing the live numbers as text (with official values in blue where they differ)
+and no edit, revert, structure, link or fork controls. Notes can still be written. Only weapon data swaps: the
+balance mod's talents, traits, buffs and damage formula stay active in every mode. The
+breakpoint window's **now** column shows whatever the game is using. A game restart always
+starts in **MB + edits**.
+
 ## Breakpoints
 
 Click **breakpoints** on any attack (or `/we_breakpoints`, which starts on the weapon's
@@ -340,8 +360,8 @@ Notes record why a balance edit was made, for dev comments and patch notes.
   One heading per weapon (its template name), a bullet per change with
   "Increased/Reduced/Changed ... to X (from Y)", "Added" or "Removed". "from" is the MB value
   before the edit; for a note whose edit already landed, the value it remembered when written.
-  Damage profile changes are listed under every weapon whose attacks use the profile, labelled
-  with those attacks. Explosions, spread and DoTs get their own headings under `## Other`.
+  Damage profile changes are listed under every weapon whose attacks use the profile, once per
+  attack, so every line names a single attack and two patches' drafts diff line by line. Explosions, spread and DoTs get their own headings under `## Other`.
 
 ## Restarting
 

@@ -34,6 +34,9 @@ local mod = get_mod("WeaponEditor")
 		                     (attacks of the combo, repeated in order, needed to kill)
 		note                 next to an edited field or entry heading: why the edit was made. Prints
 		                     as "-- note:" in the export; /we_export_notes drafts patch notes from them
+		official / MB / MB + edits
+		                     row under the top bar: which numbers the game uses, for live comparisons (see
+		                     "Data modes" below); edits are put aside meanwhile
 		/we_export            copies the export to the clipboard (and the console log)
 		paste, rebuild, restart
 		                     on launch, edits that are now in the files are dropped automatically,
@@ -833,9 +836,165 @@ local function is_unchanged(kind, value, baseline)
 	return false
 end
 
+--[[
+	Data modes: which numbers the live tables hold, to compare weapons in game without touching
+	the edits:
+		edits     the balance mod's files plus the editor's edits (normal, and the only mode
+		          that edits, exports or sweeps)
+		baseline  the balance mod's files as loaded (state.baseline)
+		vanilla   official (state.vanilla)
+
+	Leaving "edits" swaps every snapshotted entry's fields (Weapons.x.actions, ...) for copies of
+	the snapshot's, keeping the entry tables themselves, so whatever holds Weapons.x sees the
+	new numbers. The fields it replaced go to state.data_stash untouched, edits and private
+	preset copies included; going back puts them back. Entries the snapshot doesn't have (the
+	balance mod's new profiles, forks) stay as they are. Only weapon data swaps: talents,
+	traits, buffs and a balance mod's formula changes stay.
+]]
+
+local DATA_MODE_ROOTS = { "Weapons", "DamageProfileTemplates", "ExplosionTemplates", "SpreadTemplates", "BuffTemplates" }
+
+editor.DATA_MODES = { "vanilla", "baseline", "edits" }
+
+function editor.data_mode()
+	return state.data_mode or "edits"
+end
+
+function editor.data_mode_label(mode)
+	if mode == "vanilla" then
+		return "official"
+	elseif mode == "baseline" then
+		return editor.baseline_label()
+	end
+
+	return editor.baseline_label() .. " + edits"
+end
+
+-- Why editing (or exporting) isn't possible right now, or nil
+function editor.edit_mode_problem()
+	local mode = editor.data_mode()
+
+	if mode ~= "edits" then
+		return string.format("showing %s numbers - switch back to \"%s\" first", editor.data_mode_label(mode), editor.data_mode_label("edits"))
+	end
+
+	return nil
+end
+
+-- Swaps the fields of every live entry the snapshot has for copies of the snapshot's. Returns
+-- the replaced fields as a list of { entry, fields }: one per live table, since an entry can
+-- be another's alias.
+local function swap_in_snapshot(snapshot)
+	-- One shared `seen`, so tables shared in the snapshot (presets) stay shared in the copies
+	local seen = {}
+	local swapped = {}
+	local stash = {}
+
+	for _, root in ipairs(DATA_MODE_ROOTS) do
+		local live_root = rawget(_G, root)
+		local snapshot_root = snapshot[root]
+
+		if type(live_root) == "table" and type(snapshot_root) == "table" then
+			for name, snapshot_entry in pairs(snapshot_root) do
+				local entry = rawget(live_root, name)
+
+				if type(entry) == "table" and type(snapshot_entry) == "table" and not swapped[entry] then
+					local fields = {}
+
+					for k, v in pairs(entry) do
+						fields[k] = v
+					end
+
+					local copy = core.deep_copy(snapshot_entry, seen)
+
+					for k in pairs(fields) do
+						entry[k] = nil
+					end
+
+					for k, v in pairs(copy) do
+						entry[k] = v
+					end
+
+					swapped[entry] = true
+					stash[#stash + 1] = {
+						entry = entry,
+						fields = fields,
+					}
+				end
+			end
+		end
+	end
+
+	return stash
+end
+
+local function put_back_stash()
+	for _, record in ipairs(state.data_stash or {}) do
+		local entry = record.entry
+		local current = {}
+
+		for k in pairs(entry) do
+			current[k] = true
+		end
+
+		for k in pairs(current) do
+			entry[k] = nil
+		end
+
+		for k, v in pairs(record.fields) do
+			entry[k] = v
+		end
+	end
+
+	state.data_stash = nil
+end
+
+function editor.set_data_mode(mode)
+	if mode == editor.data_mode() then
+		return
+	end
+
+	if not state.baseline then
+		report("Not ready yet - the balance mod's tables haven't been captured.")
+		return
+	end
+
+	if state.data_stash then
+		put_back_stash()
+	end
+
+	if mode ~= "edits" then
+		state.data_stash = swap_in_snapshot(mode == "vanilla" and state.vanilla or state.baseline)
+	end
+
+	state.data_mode = mode ~= "edits" and mode or nil
+
+	-- Lookups keyed by live sub-tables, which just changed
+	preset_names, profile_owner_counts, weapon_owners = nil, nil, nil
+	editor.edit_generation = editor.edit_generation + 1
+
+	flush_mechanism_cache()
+	editor.on_profiles_changed()
+
+	report("Live numbers: %s.", editor.data_mode_label(mode))
+
+	-- Template buffs (dodge, movement) are read on wield; actions on every swing anyway
+	local player = Managers.player and Managers.player:local_player()
+
+	if player and player.player_unit and Unit.alive(player.player_unit) then
+		editor.reequip_wielded()
+	end
+end
+
 -- Single write path for every edit kind (see we_core.lua): kind "value" payload is the new
 -- leaf, "table" a table (stored as a copy), "removed" nothing, "ref" a global's path.
 local function write_change(keys, kind, payload)
+	local mode_problem = editor.edit_mode_problem()
+
+	if mode_problem then
+		return false, mode_problem
+	end
+
 	if #keys < 3 or not SUPPORTED_ROOTS[keys[1]] then
 		return false, "only fields inside Weapons, DamageProfileTemplates, ExplosionTemplates, SpreadTemplates and DoT template (BuffTemplates) entries can be edited"
 	end
@@ -996,6 +1155,13 @@ function editor.link_global(keys, global_path)
 end
 
 function editor.revert_matching(predicate)
+	local mode_problem = editor.edit_mode_problem()
+
+	if mode_problem then
+		report("Can't revert: %s.", mode_problem)
+		return 0
+	end
+
 	local count = 0
 
 	for path, edit in pairs(state.edits) do
@@ -1154,6 +1320,12 @@ local function create_fork(source_name, new_name)
 end
 
 function editor.fork_profile(source_name, new_name, field_keys_list)
+	local mode_problem = editor.edit_mode_problem()
+
+	if mode_problem then
+		return false, mode_problem
+	end
+
 	local prefix = host().profile_prefix or GENERIC_HOST.profile_prefix
 	local authored_profiles = editor.authored_profiles()
 
@@ -1239,6 +1411,13 @@ end
 
 function editor.delete_fork(name)
 	if not state.forks[name] then
+		return
+	end
+
+	local mode_problem = editor.edit_mode_problem()
+
+	if mode_problem then
+		report("Can't delete %s: %s.", name, mode_problem)
 		return
 	end
 
@@ -1465,6 +1644,14 @@ local function run_startup()
 
 	if state.baseline then
 		if state.needs_reapply then
+			-- The change files just re-ran over the swapped-in copies, which now hold what they
+			-- load: the stashed tables are the old load's, so they go
+			if state.data_stash then
+				state.data_stash = nil
+				state.data_mode = nil
+				report("Reloaded while showing other numbers - back to %s.", editor.data_mode_label("edits"))
+			end
+
 			reapply_edits()
 		end
 
@@ -1544,6 +1731,13 @@ local function put_on_clipboard(text)
 end
 
 function editor.export()
+	local mode_problem = editor.edit_mode_problem()
+
+	if mode_problem then
+		report("Can't export: %s.", mode_problem)
+		return
+	end
+
 	if editor.edit_count() == 0 and next(state.forks) == nil then
 		report("Nothing to export.")
 		return
@@ -1564,6 +1758,13 @@ end
 
 -- The patch-note draft (export.patch_notes) to the clipboard
 function editor.export_patch_notes()
+	local mode_problem = editor.edit_mode_problem()
+
+	if mode_problem then
+		report("Can't export patch notes: %s.", mode_problem)
+		return
+	end
+
 	local text, count = export.patch_notes(editor)
 
 	if count == 0 then

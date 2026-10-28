@@ -147,8 +147,27 @@ local function apply_mode_overrides(sub_action, template_name)
 	return resolved, mode
 end
 
+-- A sub-action's profiles as { label, name } pairs, and whether it's a push. A push
+-- (ActionPushStagger) has an inner and an outer profile, picked by the target's angle;
+-- ActionUtils.get_damage_profile_name doesn't see those.
+local function sub_action_profile_names(sub_action)
+	if sub_action.damage_profile_inner or sub_action.damage_profile_outer then
+		return {
+			{ "inner", sub_action.damage_profile_inner },
+			{ "outer", sub_action.damage_profile_outer },
+		}, true
+	end
+
+	local left_name, right_name = ActionUtils.get_damage_profile_name(sub_action, sub_action.weapon_action_hand)
+
+	return {
+		{ "left", left_name },
+		{ "right", right_name },
+	}, false
+end
+
 -- The damage profile(s) of one action in each version of the data. Each hand of a dual
--- weapon action is its own entry.
+-- weapon action is its own entry, as are a push's inner and outer profiles.
 local function resolve_profiles(editor, target_keys)
 	local state = editor.state
 	local sources = {
@@ -178,15 +197,18 @@ local function resolve_profiles(editor, target_keys)
 				weapon_mode = mode
 			end
 
-			local left_name, right_name = ActionUtils.get_damage_profile_name(sub_action, sub_action.weapon_action_hand)
+			local entries, is_push = sub_action_profile_names(sub_action)
 
-			for hand_index, name in ipairs({ left_name or false, right_name or false }) do
+			for hand_index, entry in ipairs(entries) do
+				local name = entry[2]
+
 				if name then
 					local hand = hands[hand_index]
 
 					if not hand then
 						hand = {
-							label = hand_index == 1 and "left" or "right",
+							label = entry[1],
+							push = is_push,
 							names = {},
 							profiles = {},
 						}
@@ -307,7 +329,10 @@ local function column_reuse(editor, hand)
 		end
 	end
 
-	if hand.profiles.baseline and hand.names.baseline == hand.names.now and not now_edited then
+	-- "now" is the live tables: official numbers while the editor shows those
+	local mode = editor.data_mode()
+
+	if hand.profiles.baseline and hand.names.baseline == hand.names.now and (mode == "baseline" or (mode == "edits" and not now_edited)) then
 		same_as.baseline = "now"
 	end
 
@@ -352,6 +377,19 @@ end
 
 -- Damage one hand of an attack deals to a breed's target_index, per column
 local function hand_damages(ctx, hand, breed, target_index)
+	-- Pushes only stagger: ActionPushStagger sends its hits with can_damage false
+	if hand.push then
+		local results = {}
+
+		for _, variant in ipairs(VARIANTS) do
+			if hand.profiles[variant] then
+				results[variant] = 0
+			end
+		end
+
+		return results
+	end
+
 	return per_variant(ctx, hand, breed, function (profile)
 		-- Target 1 is the swing's first hit (first_melee_hit_damage buffs)
 		return (prediction.predict(ctx.unit, ctx.damage_source, ctx.power_level, profile, target_index, ctx.critical, breed, ctx.hit_zone_name, ctx.difficulty_level, 0, 1, ctx.stagger_number, target_index == 1, ctx.power_bonus, ctx.damage_multiplier, ctx.unbalanced_bonus))
@@ -453,6 +491,7 @@ local function compute_attack_grid(editor, ctx, cell_for)
 			hand = hand,
 			rows = rows,
 		}
+		grid.push = grid.push or hand.push
 	end
 
 	return grid
@@ -464,9 +503,14 @@ local function add_stagger_thresholds(grid, ctx)
 	local is_ranged = prediction.is_ranged_source(ctx.damage_source)
 
 	for _, hand_grid in ipairs(grid.hands) do
+		-- A push profile on an enemy without stagger stacks needs double for heavy (combos mix
+		-- steps, so they show the normal thresholds)
+		local profile = hand_grid.hand and hand_grid.hand.profiles.now
+		local first_push = profile and profile.is_push and ctx.stagger_number == 0 or false
+
 		for _, row in ipairs(hand_grid.rows) do
 			if row.breed then
-				row.thresholds = prediction.stagger_thresholds(row.breed, ctx.difficulty_level, is_ranged, false)
+				row.thresholds = prediction.stagger_thresholds(row.breed, ctx.difficulty_level, is_ranged, first_push)
 			end
 		end
 	end
@@ -1364,6 +1408,10 @@ local function draw_body(editor, t)
 
 	local options = s.breakpoint_options
 
+	if editor.edit_mode_problem() then
+		text_colored(string.format("Live numbers: %s - the \"now\" column shows those, not your edits.", editor.data_mode_label(editor.data_mode())), WORSE_COLOR)
+	end
+
 	if editor.breakpoint_target then
 		Imgui.text(core.format_relative(editor.breakpoint_target, 2))
 	else
@@ -1394,6 +1442,8 @@ local function draw_body(editor, t)
 	if grid then
 		if #grid.hands == 0 then
 			Imgui.text("This action has no damage profile.")
+		elseif grid.push and not grid.stagger and not grid.combo_steps then
+			Imgui.text("Pushes deal no damage - see the stagger sheet.")
 		else
 			draw_grid(grid, options)
 		end

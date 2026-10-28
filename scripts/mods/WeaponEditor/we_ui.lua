@@ -168,6 +168,18 @@ local function text_colored(text, color)
 	Imgui.text_colored(text, color[1], color[2], color[3], color[4])
 end
 
+-- Set each frame by draw_body: the live tables hold official or baseline numbers
+-- (editor.edit_mode_problem), so fields show as text and every edit/revert control is hidden
+local read_only = false
+
+-- A field's value as plain text, "name: value" (id: an Imgui label, "name##path" or "##path")
+local function draw_read_only_value(id, value)
+	local name = tostring(id):match("^(.-)##") or tostring(id)
+	local text = type(value) == "string" and value or core.format_value(value)
+
+	Imgui.text(name ~= "" and (name .. ": " .. text) or text)
+end
+
 local function report_result(editor, keys, ok, err)
 	if not ok then
 		editor.report("Edit rejected (%s): %s", core.format_path(keys), err)
@@ -481,7 +493,8 @@ end
 	profile's name.
 ]]
 local function draw_edit_marker(editor, keys, path, live_value)
-	local edit = editor.state.edits[path]
+	-- Read-only: the live value isn't the edit's, so only the official comparison applies
+	local edit = not read_only and editor.state.edits[path] or nil
 	local show_official, official_value = official_to_show(editor, keys, live_value, edit)
 
 	if edit then
@@ -509,6 +522,13 @@ end
 
 local function draw_string_field(editor, key, value, keys, path)
 	local label = tostring(key) .. "##" .. path
+
+	if read_only then
+		draw_read_only_value(label, value)
+
+		return
+	end
+
 	local dropdown = dropdown_for(key)
 	local index = dropdown and dropdown.index_of[value]
 
@@ -552,6 +572,12 @@ end
 -- 3 decimals (0.0625 -> 0.063) and hands back float32 values (0.225 -> 0.2249999940...).
 -- A typed value is applied as soon as it parses, and kept as typed ("0.", "-") until it does.
 local function draw_number_field(editor, id, value, keys, path)
+	if read_only then
+		draw_read_only_value(id, value)
+
+		return
+	end
+
 	local buffers = editor.ui_state.number_buffers
 
 	if not buffers then
@@ -611,7 +637,7 @@ local function explosion_link_state(value, parent_keys)
 end
 
 local function draw_structure_buttons(editor, t, keys, key, child_keys, path, parent_is_array)
-	if not editor.ui_state.structure_mode then
+	if read_only or not editor.ui_state.structure_mode then
 		return
 	end
 
@@ -662,6 +688,11 @@ end
 
 -- Fields removed by an edit no longer exist in the table, so list them for reverting
 local function draw_removed_fields(editor, parent_path)
+	-- Removals are edits: the swapped-in numbers still have the field
+	if read_only then
+		return
+	end
+
 	refresh_caches(editor)
 
 	for _, removed in ipairs(removed_by_parent[parent_path] or {}) do
@@ -675,7 +706,7 @@ local function draw_removed_fields(editor, parent_path)
 end
 
 local function draw_add_controls(editor, t, keys)
-	if not editor.ui_state.structure_mode then
+	if read_only or not editor.ui_state.structure_mode then
 		return
 	end
 
@@ -770,7 +801,7 @@ local function edit_table(editor, t, keys, skip_keys)
 
 				draw_tree_markers(editor, node_keys, node_path, has_edit_under(editor, path) or has_edit_under(editor, node_path))
 
-				if link_state == "copy" then
+				if link_state == "copy" and not read_only then
 					Imgui.same_line()
 
 					if Imgui.small_button("link to global##link" .. path) then
@@ -778,7 +809,7 @@ local function edit_table(editor, t, keys, skip_keys)
 					end
 				end
 
-				if editor.state.edits[path] then
+				if editor.state.edits[path] and not read_only then
 					Imgui.same_line()
 					text_colored(core.describe_edit(editor.state.edits[path]), EDITED_COLOR)
 					Imgui.same_line()
@@ -800,10 +831,14 @@ local function edit_table(editor, t, keys, skip_keys)
 			elseif value_type == "number" then
 				draw_number_field(editor, name .. "##" .. path, value, child_keys, path)
 			elseif value_type == "boolean" then
-				local new_value = Imgui.checkbox(name .. "##" .. path, value)
+				if read_only then
+					draw_read_only_value(name, value)
+				else
+					local new_value = Imgui.checkbox(name .. "##" .. path, value)
 
-				if new_value ~= value then
-					apply(editor, child_keys, new_value)
+					if new_value ~= value then
+						apply(editor, child_keys, new_value)
+					end
 				end
 			elseif value_type == "string" then
 				draw_string_field(editor, key, value, child_keys, path)
@@ -924,6 +959,8 @@ local function sheet_cell(editor, root, root_keys, relative_keys)
 
 	if value_type == "number" then
 		draw_number_field(editor, id, value, keys, path)
+	elseif value_type == "boolean" and read_only then
+		draw_read_only_value(id, value)
 	elseif value_type == "boolean" then
 		local new_value = Imgui.checkbox(id, value)
 
@@ -932,7 +969,7 @@ local function sheet_cell(editor, root, root_keys, relative_keys)
 		end
 	elseif value_type == "string" then
 		local dropdown = dropdown_for(keys[#keys])
-		local index = dropdown and dropdown.index_of[value]
+		local index = not read_only and dropdown and dropdown.index_of[value]
 
 		if index then
 			local new_index = Imgui.combo(id, index, dropdown.names)
@@ -943,7 +980,7 @@ local function sheet_cell(editor, root, root_keys, relative_keys)
 		else
 			Imgui.text(value)
 		end
-	elseif editor.ui_state.structure_mode and type(parent) == "table" then
+	elseif editor.ui_state.structure_mode and not read_only and type(parent) == "table" then
 		if Imgui.small_button("+" .. id) then
 			local default_value = sheet_add_default(editor, keys)
 
@@ -961,7 +998,7 @@ local function sheet_cell(editor, root, root_keys, relative_keys)
 	-- yellow - a button that reverts to it, as the cell has no room for a "revert" - and the
 	-- official value in blue; otherwise the official value where the balance mod changed it. The
 	-- column clips long values; hovering shows them in full.
-	local edit = editor.state.edits[path]
+	local edit = not read_only and editor.state.edits[path] or nil
 	local show_official, official_value = false, nil
 
 	if value_type ~= "table" then
@@ -1061,7 +1098,7 @@ local function draw_attack_sheet(editor, profile_name)
 	local profile = DamageProfileTemplates[profile_name]
 	local profile_keys = { "DamageProfileTemplates", profile_name }
 
-	local structure_mode = editor.ui_state.structure_mode
+	local structure_mode = editor.ui_state.structure_mode and not read_only
 
 	for _, field in ipairs(SHEET_TOP_FIELDS) do
 		if profile[field] ~= nil or (structure_mode and SHEET_ADD_DEFAULTS[field] ~= nil) then
@@ -1234,8 +1271,12 @@ local function draw_fork_controls(editor, profile_name, field_keys)
 	local new_name = s.fork_names[field_path]
 
 	if Imgui.small_button("fork for this attack##fork_one" .. field_path) then
-		if editor.fork_profile(profile_name, new_name, { field_keys }) then
+		local ok, err = editor.fork_profile(profile_name, new_name, { field_keys })
+
+		if ok then
 			s.fork_names[field_path] = nil
+		else
+			editor.report("Couldn't fork %s: %s", profile_name, tostring(err))
 		end
 	end
 
@@ -1245,8 +1286,12 @@ local function draw_fork_controls(editor, profile_name, field_keys)
 		Imgui.same_line()
 
 		if Imgui.small_button(string.format("fork for all %d attacks of this weapon using it##fork_all", #siblings) .. field_path) then
-			if editor.fork_profile(profile_name, new_name, siblings) then
+			local ok, err = editor.fork_profile(profile_name, new_name, siblings)
+
+			if ok then
 				s.fork_names[field_path] = nil
+			else
+				editor.report("Couldn't fork %s: %s", profile_name, tostring(err))
 			end
 		end
 	end
@@ -1261,12 +1306,15 @@ draw_profile = function (editor, profile_name, field_keys)
 
 	if is_fork then
 		text_colored(string.format("Fork of %s - exports as a new %s block", editor.state.forks[profile_name].source, block_global), INFO_COLOR)
-		Imgui.same_line()
 
-		if Imgui.small_button("delete fork##delete_fork" .. profile_path) then
-			editor.delete_fork(profile_name)
+		if not read_only then
+			Imgui.same_line()
 
-			return
+			if Imgui.small_button("delete fork##delete_fork" .. profile_path) then
+				editor.delete_fork(profile_name)
+
+				return
+			end
 		end
 	elseif is_authored_profile then
 		text_colored(string.format("%s profile - exports as a whole %s block", editor.baseline_label(), block_global), INFO_COLOR)
@@ -1274,7 +1322,7 @@ draw_profile = function (editor, profile_name, field_keys)
 		text_colored("Official profile - shared presets are copied into it on first edit", INFO_COLOR)
 	end
 
-	local profile_edited = has_edit_under(editor, profile_path)
+	local profile_edited = not read_only and has_edit_under(editor, profile_path)
 
 	if profile_edited then
 		Imgui.same_line()
@@ -1287,7 +1335,7 @@ draw_profile = function (editor, profile_name, field_keys)
 	draw_note_button(editor, profile_path, "heading")
 	draw_note_body(editor, profile_path, "heading")
 
-	if field_keys and Imgui.tree_node("fork into a new " .. editor.host.profile_prefix .. " profile##fork" .. core.format_path(field_keys)) then
+	if field_keys and not read_only and Imgui.tree_node("fork into a new " .. editor.host.profile_prefix .. " profile##fork" .. core.format_path(field_keys)) then
 		draw_fork_controls(editor, profile_name, field_keys)
 		Imgui.tree_pop()
 	end
@@ -1462,7 +1510,7 @@ local function draw_global_entry(editor, root, name)
 	Imgui.text(entry_path)
 	draw_tree_markers(editor, { root, name })
 
-	local entry_edited = has_edit_under(editor, entry_path)
+	local entry_edited = not read_only and has_edit_under(editor, entry_path)
 
 	if entry_edited then
 		Imgui.same_line()
@@ -1481,10 +1529,13 @@ local function draw_global_entry(editor, root, name)
 			local copy_path = core.format_path(copy_keys)
 
 			text_colored("Own copy (immediate blast ignores edits here): " .. copy_path, WARNING_COLOR)
-			Imgui.same_line()
 
-			if Imgui.small_button("link to global##link" .. copy_path) then
-				report_result(editor, copy_keys, editor.link_global(copy_keys, entry_path))
+			if not read_only then
+				Imgui.same_line()
+
+				if Imgui.small_button("link to global##link" .. copy_path) then
+					report_result(editor, copy_keys, editor.link_global(copy_keys, entry_path))
+				end
 			end
 		end
 	elseif root == "SpreadTemplates" then
@@ -1515,7 +1566,7 @@ local function draw_template(editor, template_name)
 	Imgui.text("Template: " .. template_name)
 	draw_markers(template_edited, template_differs, template_noted)
 
-	if has_edit_under(editor, template_path) then
+	if not read_only and has_edit_under(editor, template_path) then
 		Imgui.same_line()
 
 		if Imgui.small_button("revert weapon##revert_template") then
@@ -1634,16 +1685,24 @@ local function draw_edit_list(editor)
 	table.sort(paths)
 
 	if Imgui.collapsing_header(string.format("All edits (%d)###edit_list", #paths), false) then
+		if read_only then
+			text_colored("Put aside while other numbers are live - not in the game right now.", WARNING_COLOR)
+		end
+
 		for _, path in ipairs(paths) do
 			local edit = edits[path]
 
-			if Imgui.small_button("revert##list" .. path) then
-				editor.revert_edit(path)
+			if not read_only then
+				if Imgui.small_button("revert##list" .. path) then
+					editor.revert_edit(path)
+				end
+
+				Imgui.same_line()
 			end
 
 			-- Same note (and text box) as next to the field itself; up front, since the paths
 			-- are long
-			draw_note_button(editor, path, "list")
+			draw_note_button(editor, path, "list", true)
 
 			Imgui.same_line()
 			Imgui.text(string.format("%s = %s (%s %s)", path, core.describe_edit(edit), editor.baseline_label(), type(edit.baseline) == "table" and "<table>" or core.format_value(edit.baseline)))
@@ -1671,6 +1730,8 @@ local function draw_edit_list(editor)
 end
 
 local function draw_body(editor)
+	read_only = editor.edit_mode_problem() ~= nil
+
 	if Imgui.begin_menu_bar() then
 		if Imgui.menu_item("Export to clipboard") then
 			editor.export()
@@ -1694,6 +1755,42 @@ local function draw_body(editor)
 
 		Imgui.end_menu_bar()
 	end
+
+	-- Which numbers the game uses (a menu bar is a single row, so this is its own line under
+	-- it), the current one in brackets and highlighted
+	local current_mode = editor.data_mode()
+
+	Imgui.text("Weapon numbers in game:")
+
+	for _, mode in ipairs(editor.DATA_MODES) do
+		local label = editor.data_mode_label(mode)
+		local is_current = mode == current_mode
+
+		Imgui.same_line()
+
+		if is_current then
+			label = "[" .. label .. "]"
+
+			Imgui.push_style_color(Imgui.COLOR_TEXT, INFO_COLOR[1], INFO_COLOR[2], INFO_COLOR[3], INFO_COLOR[4])
+		end
+
+		local clicked = Imgui.small_button(label .. "##data_mode_" .. mode)
+
+		if is_current then
+			Imgui.pop_style_color(1)
+		end
+
+		if clicked then
+			editor.set_data_mode(mode)
+		end
+	end
+
+	if read_only then
+		Imgui.same_line()
+		text_colored(string.format("read-only, edits put aside - \"%s\" to edit", editor.data_mode_label("edits")), WARNING_COLOR)
+	end
+
+	Imgui.separator()
 
 	Imgui.text(string.format("%d edit(s) | F3: %s", editor.edit_count(), editor.interacting and "editing - press to play" or "playing - press to edit"))
 	Imgui.same_line()
