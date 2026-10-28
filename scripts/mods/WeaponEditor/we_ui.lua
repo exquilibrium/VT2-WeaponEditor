@@ -1830,7 +1830,9 @@ function ui.draw(editor)
 	if editor.pending_window_reset.editor then
 		editor.pending_window_reset.editor = nil
 
-		Imgui.set_next_window_pos(30, 30)
+		local origin_x, origin_y = editor.game_window_origin()
+
+		Imgui.set_next_window_pos(origin_x + 30, origin_y + 30)
 		Imgui.set_next_window_size(760, 860)
 	end
 

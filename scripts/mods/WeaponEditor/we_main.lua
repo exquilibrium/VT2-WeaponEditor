@@ -2186,6 +2186,24 @@ mod:command("we_reequip", "Weapon editor: respawn the wielded weapon so wield/sp
 	editor.reequip_wielded()
 end)
 
+-- The game window's top-left in Imgui coordinates, for /we_reset_windows. The game's Imgui has
+-- external viewports: window positions are desktop coordinates, and a window placed outside
+-- the game window becomes its own OS window - which a windowed game's offset from the desktop
+-- corner causes for any fixed position. The main menu bar always sits at the game window's
+-- top-left, so one frame of it (an empty bar, drawn only on the reset frame) gives the origin.
+-- A window that ends up wholly inside the game window is merged back into it by Imgui.
+function editor.game_window_origin()
+	if Imgui.begin_main_menu_bar() then
+		local x, y = Imgui.get_window_pos()
+
+		Imgui.end_main_menu_bar()
+
+		return x or 0, y or 0
+	end
+
+	return 0, 0
+end
+
 mod:command("we_reset_windows", "Weapon editor: move the editor and breakpoint windows back on screen (default position and size).", function ()
 	editor.pending_window_reset.editor = true
 	editor.pending_window_reset.breakpoints = true

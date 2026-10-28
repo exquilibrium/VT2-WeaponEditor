@@ -1543,7 +1543,9 @@ function breakpoints.draw(editor, t)
 	if editor.pending_window_reset.breakpoints then
 		editor.pending_window_reset.breakpoints = nil
 
-		Imgui.set_next_window_pos(90, 90)
+		local origin_x, origin_y = editor.game_window_origin()
+
+		Imgui.set_next_window_pos(origin_x + 90, origin_y + 90)
 		Imgui.set_next_window_size(820, 700)
 	end
 

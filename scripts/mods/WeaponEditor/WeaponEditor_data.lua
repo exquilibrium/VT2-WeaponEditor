@@ -14,7 +14,7 @@ return {
 				setting_id = "toggle_window_keybind",
 				type = "keybind",
 				tooltip = "toggle_window_keybind_description",
-				default_value = { "F2" },
+				default_value = { "f2" },
 				keybind_global = true,
 				keybind_trigger = "pressed",
 				keybind_type = "function_call",
