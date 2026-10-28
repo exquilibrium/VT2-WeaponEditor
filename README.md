@@ -242,10 +242,15 @@ first attack). The grid shows, per breed and target index:
   profile the action used before the balance mod. All three use the balance mod's registered
   damage formula and stagger rule (the game's own without registration), so differences come
   only from the weapon data.
+- Hits to kill show how much of the last hit's damage the kill needs: `2 (73%)` is two hits,
+  the second needing only 73% of its damage. 100% is right on the breakpoint (any less damage
+  takes another hit); a low % has room to spare.
 - Green = your edit beats the MB value, red = worse.
 - Options: your power level or a typed one, difficulty, hit zone (torso/head), crit, stagger
   stacks (by the registered stagger rule, or the game's: at most 2 count, ranged counts as at least 1),
-  1-5 targets, hits-to-kill or raw damage, and which categories to show: **Trash, Elite,
+  1-5 targets, hits-to-kill or raw damage, **combine dual-wield hands into one attack** (one
+  table where each attack hits with both hands, instead of one table per hand; pushes keep
+  their inner/outer profiles apart), and which categories to show: **Trash, Elite,
   Specials, Other, Boss, Lords** (taken from the categories used in `breakpoints.BREEDS`, so a
   new category there gets its own checkbox automatically).
 - **Simulated buffs** (so you don't need a crafted trinket or a teammate):

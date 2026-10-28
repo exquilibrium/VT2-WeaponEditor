@@ -37,12 +37,18 @@ function prediction.breed_health(breed, difficulty_level)
 	return breed.max_health and difficulty_settings and breed.max_health[difficulty_settings.rank] or 0
 end
 
+-- Hits to kill, and the share of the last hit's damage the kill needs (1 = right on the
+-- breakpoint: any less damage takes another hit)
 function prediction.hits_to_kill(health, damage)
-	if not damage or damage <= 0 then
+	local per_hit = damage and damage > 0 and DamageUtils.networkify_damage(damage) or 0
+
+	if per_hit <= 0 then
 		return nil
 	end
 
-	return math.ceil(health / DamageUtils.networkify_damage(damage))
+	local hits = math.ceil(health / per_hit)
+
+	return hits, (health - (hits - 1) * per_hit) / per_hit
 end
 
 --[[
@@ -482,7 +488,8 @@ end
 --[[
 	Combos: a list of attacks repeated in order until the enemy dies. step_hits[i] holds the
 	damage of each hand of attack i - every hand's hit is its own damage event, so each is
-	rounded on its own, like hits_to_kill does. Returns the number of attacks needed.
+	rounded on its own, like hits_to_kill does. Returns the number of attacks needed and the
+	share of the last attack's damage the kill needs.
 ]]
 function prediction.combo_hits_to_kill(health, step_hits)
 	local step_totals = {}
@@ -514,7 +521,7 @@ function prediction.combo_hits_to_kill(health, step_hits)
 			total = total + step_total
 
 			if total >= health then
-				return attacks
+				return attacks, step_total > 0 and (health - (total - step_total)) / step_total or 1
 			end
 		end
 	end

@@ -259,6 +259,8 @@ local function default_options()
 		damage_percent = 0,
 		stagger_power_percent = 0,
 		target_count_index = 3,
+		-- A dual-wield attack's hands in one table, each attack hitting with both
+		combine_hands = false,
 		display_index = 1,
 		stagger_display_index = 1,
 		categories = categories,
@@ -307,6 +309,7 @@ local function grid_context(options)
 		damage_multiplier = (1 + (options.damage_percent or 0) / 100) * witch_hunt_multiplier,
 		unbalanced_bonus = options.bulwark and prediction.bulwark_bonus() or nil,
 		target_count = options.target_count_index,
+		combine_hands = options.combine_hands,
 		categories = options.categories,
 		-- Shared with the combo steps' contexts: the first error a cell hit, shown above the grid
 		problems = {},
@@ -450,48 +453,130 @@ local function new_grid(ctx)
 	}
 end
 
--- Damage sheet cell variant: { damage, hits }
-local function damage_cell(ctx, hand, breed, health, target_index)
+-- Damage sheet cell variant: { damage, hits, last_share } from attacks repeated in order.
+-- step_hits[variant] lists each attack's hand damages (false for a hand without a result); a
+-- column missing any hit (no profile in that version of the data) is left out rather than
+-- showing a partial attack.
+local function attacks_damage_cell(health, step_hits)
 	local cell = {}
 
-	for variant, damage in pairs(hand_damages(ctx, hand, breed, target_index)) do
-		cell[variant] = {
-			damage = damage,
-			hits = prediction.hits_to_kill(health, damage),
-		}
+	for _, variant in ipairs(VARIANTS) do
+		local steps = step_hits[variant]
+		local complete = #steps > 0
+		local pass_damage = 0
+
+		for _, hits in ipairs(steps) do
+			if #hits == 0 then
+				complete = false
+			end
+
+			for _, damage in ipairs(hits) do
+				if damage then
+					pass_damage = pass_damage + damage
+				else
+					complete = false
+				end
+			end
+		end
+
+		if complete then
+			local hits, last_share = prediction.combo_hits_to_kill(health, steps)
+
+			cell[variant] = {
+				damage = pass_damage,
+				hits = hits,
+				last_share = last_share,
+			}
+		end
 	end
 
 	return cell
 end
 
--- Stagger sheet cell variant: a list of the stagger of each hand that hits there (one here;
--- a combo step can have two)
-local function stagger_cell(ctx, hand, breed, health, target_index)
-	local cell = {}
+-- Damage sheet cell: one attack hitting with each of hands (one, or both of a dual-wield
+-- attack when combined)
+local function damage_cell(ctx, hands, breed, health, target_index)
+	local step_hits = {}
 
-	for variant, stagger in pairs(hand_staggers(ctx, hand, breed, target_index)) do
-		cell[variant] = { stagger }
+	for _, variant in ipairs(VARIANTS) do
+		step_hits[variant] = { {} }
+	end
+
+	for _, hand in ipairs(hands) do
+		local damages = hand_damages(ctx, hand, breed, target_index)
+
+		for _, variant in ipairs(VARIANTS) do
+			local hits = step_hits[variant][1]
+
+			hits[#hits + 1] = damages[variant] or false
+		end
+	end
+
+	return attacks_damage_cell(health, step_hits)
+end
+
+-- Appends each hand's stagger to its cell variant's list (false for a hand without a result)
+local function add_hand_staggers(cell, ctx, hands, breed, target_index)
+	for _, hand in ipairs(hands) do
+		local staggers = hand_staggers(ctx, hand, breed, target_index)
+
+		for _, variant in ipairs(VARIANTS) do
+			cell[variant] = cell[variant] or {}
+			cell[variant][#cell[variant] + 1] = staggers[variant] or false
+		end
 	end
 
 	return cell
 end
 
--- One grid per hand of the attack, cells from cell_for (damage_cell / stagger_cell)
+-- Stagger sheet cell variant: a list of the stagger of each hand that hits there. A column
+-- with no result from any hand is left out.
+local function stagger_cell(ctx, hands, breed, health, target_index)
+	local cell = add_hand_staggers({}, ctx, hands, breed, target_index)
+
+	for _, variant in ipairs(VARIANTS) do
+		local any = false
+
+		for _, stagger in ipairs(cell[variant]) do
+			any = any or stagger ~= false
+		end
+
+		if not any then
+			cell[variant] = nil
+		end
+	end
+
+	return cell
+end
+
+-- One grid per hand of the attack, cells from cell_for (damage_cell / stagger_cell). With
+-- combine_hands, a dual-wield attack's hands share one grid: each attack hits with both. A
+-- push's inner and outer profiles are alternatives (by the target's angle), never combined.
 local function compute_attack_grid(editor, ctx, cell_for)
 	local grid = new_grid(ctx)
+	local groups = {}
 
 	for _, hand in ipairs(resolve_profiles(editor, editor.breakpoint_target)) do
 		hand.same_as = column_reuse(editor, hand)
+		grid.push = grid.push or hand.push
 
+		if ctx.combine_hands and not hand.push and groups[1] then
+			table.insert(groups[1], hand)
+		else
+			groups[#groups + 1] = { hand }
+		end
+	end
+
+	for _, hands in ipairs(groups) do
 		local rows = build_rows(ctx, ctx.target_count, function (breed, health, target_index)
-			return cell_for(ctx, hand, breed, health, target_index)
+			return cell_for(ctx, hands, breed, health, target_index)
 		end)
 
 		grid.hands[#grid.hands + 1] = {
-			hand = hand,
+			hand = #hands == 1 and hands[1] or nil,
+			combined = #hands > 1 and hands or nil,
 			rows = rows,
 		}
-		grid.push = grid.push or hand.push
 	end
 
 	return grid
@@ -582,18 +667,8 @@ local function compute_combo_stagger_grid(editor, ctx)
 
 	local rows = build_rows(ctx, #steps, function (breed, health, step_index)
 		local step = steps[step_index]
-		local cell = {}
 
-		for _, hand in ipairs(step.hands) do
-			local staggers = hand_staggers(step.ctx, hand, breed, 1)
-
-			for _, variant in ipairs(VARIANTS) do
-				cell[variant] = cell[variant] or {}
-				cell[variant][#cell[variant] + 1] = staggers[variant] or false
-			end
-		end
-
-		return cell
+		return add_hand_staggers({}, step.ctx, step.hands, breed, 1)
 	end)
 
 	local grid = new_combo_grid(ctx, steps, rows)
@@ -630,39 +705,7 @@ local function compute_combo_grid(editor, ctx)
 			end
 		end
 
-		local cell = {}
-
-		for _, variant in ipairs(VARIANTS) do
-			-- A column missing any hit (no profile in that version of the data) leaves the
-			-- whole combo out rather than showing a partial one
-			local complete = #steps > 0
-			local pass_damage = 0
-
-			for i = 1, #steps do
-				local hits = step_hits[variant][i]
-
-				if #hits == 0 then
-					complete = false
-				end
-
-				for _, damage in ipairs(hits) do
-					if damage then
-						pass_damage = pass_damage + damage
-					else
-						complete = false
-					end
-				end
-			end
-
-			if complete then
-				cell[variant] = {
-					damage = pass_damage,
-					hits = prediction.combo_hits_to_kill(health, step_hits[variant]),
-				}
-			end
-		end
-
-		return cell
+		return attacks_damage_cell(health, step_hits)
 	end)
 
 	return new_combo_grid(ctx, steps, rows)
@@ -906,6 +949,20 @@ local function text_colored(text, color)
 	Imgui.text_colored(text, color[1], color[2], color[3], color[4])
 end
 
+-- "2 (73%)": hits to kill, and how much of the last hit's damage the kill needs - 100% is
+-- right on the breakpoint (the share is floored like the stagger sheet's, but never shows 0%)
+local function format_hits(hits, last_share)
+	if not hits then
+		return "-"
+	end
+
+	if not last_share then
+		return tostring(hits)
+	end
+
+	return string.format("%d (%d%%)", hits, math.max(1, math.floor(last_share * 100 + 1e-6)))
+end
+
 local function format_cell_value(cell_variant, display_index)
 	if not cell_variant then
 		return "-"
@@ -915,7 +972,7 @@ local function format_cell_value(cell_variant, display_index)
 		return string.format("%.1f", cell_variant.damage)
 	end
 
-	return cell_variant.hits and tostring(cell_variant.hits) or "-"
+	return format_hits(cell_variant.hits, cell_variant.last_share)
 end
 
 -- now vs baseline: fewer hits / more damage is better
@@ -1019,6 +1076,14 @@ local function draw_options(options)
 	options.hit_zone_index = Imgui.combo("hit zone##bp_zone", options.hit_zone_index, HIT_ZONES)
 	options.stagger_index = Imgui.combo("stagger stacks##bp_stagger", options.stagger_index, STAGGER_LEVELS)
 	options.target_count_index = Imgui.combo("targets##bp_targets", options.target_count_index, TARGET_COUNTS)
+	options.combine_hands = Imgui.checkbox("combine dual-wield hands into one attack##bp_combine_hands", options.combine_hands or false)
+
+	if Imgui.is_item_hovered() then
+		Imgui.begin_tool_tip()
+		Imgui.text("Off: one table per hand. On: one table where each attack hits with both hands -")
+		Imgui.text("hits to kill counts attacks, damage is both hands' together. Pushes keep inner/outer apart.")
+		Imgui.end_tool_tip()
+	end
 
 	if stagger_sheet(options) then
 		options.stagger_display_index = Imgui.combo("show##bp_stagger_display", options.stagger_display_index, STAGGER_DISPLAY_MODES)
@@ -1125,6 +1190,7 @@ local function options_key(editor, options)
 		tostring(options.critical),
 		tostring(options.stagger_index),
 		tostring(options.target_count_index),
+		tostring(options.combine_hands),
 	}, "|")
 end
 
@@ -1159,8 +1225,14 @@ local function draw_grid(grid, options)
 		if grid.problems.no_full_calculation then
 			text_colored("The game's stagger calculation couldn't be reached (debug.getupvalue) - showing its tooltip version instead: stagger stacks and Opportunist are ignored.", WORSE_COLOR)
 		end
-	elseif grid.combo_steps then
-		text_colored(string.format("combo of %d attacks, repeated in order - hits: attacks to kill, damage: one pass of the combo. Hit zone, stagger and crit are set per attack in the combo list.", #grid.combo_steps), INFO_COLOR)
+	else
+		if grid.combo_steps then
+			text_colored(string.format("combo of %d attacks, repeated in order - hits: attacks to kill, damage: one pass of the combo. Hit zone, stagger and crit are set per attack in the combo list.", #grid.combo_steps), INFO_COLOR)
+		end
+
+		if options.display_index == 1 then
+			text_colored("2 (73%) = 2 hits to kill, the last one needing 73% of its damage (100% = right on the breakpoint).", INFO_COLOR)
+		end
 	end
 
 	-- A cell whose calculation threw is left empty; the first error says why
@@ -1187,6 +1259,12 @@ local function draw_grid(grid, options)
 
 		if hand then
 			draw_hand_profiles(hand, #grid.hands > 1 and (hand.label .. ": ") or "")
+		elseif hand_grid.combined then
+			text_colored("hands combined: each attack hits with all of them", INFO_COLOR)
+
+			for _, combined_hand in ipairs(hand_grid.combined) do
+				draw_hand_profiles(combined_hand, combined_hand.label .. ": ")
+			end
 		end
 
 		Imgui.columns(column_count + 2, true)
@@ -1298,7 +1376,7 @@ local function draw_hit_log()
 		local text = string.format("%s %s T%s%s%s [%s] %.2f dmg (%s stagger, x%.2f damage buffs) - %s hits of %.0f hp",
 			entry.breed_name, entry.hit_zone_name, tostring(entry.target_index), entry.is_critical_strike and " crit" or "", entry.first_hit and " first hit" or "", entry.profile_name,
 			dealt, stagger_text, buff_multiplier,
-			tostring(prediction.hits_to_kill(entry.health, dealt) or "-"), entry.health)
+			format_hits(prediction.hits_to_kill(entry.health, dealt)), entry.health)
 
 		if entry.formula_match == false then
 			text_colored(string.format("%s - formula MISMATCH (base %.2f, predicted %.2f)", text, entry.base, entry.predicted_base or -1), MISMATCH_COLOR)
