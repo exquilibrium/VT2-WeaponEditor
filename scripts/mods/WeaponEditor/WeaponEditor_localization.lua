@@ -15,7 +15,7 @@ return {
 		en = "While the editor is open: switches between using its windows (cursor shown, game input blocked) and playing.",
 	},
 	font_size = {
-		en = "Font size (%)",
+		en = "Font size (in Percent)",
 	},
 	font_size_description = {
 		en = "Text size of the editor and breakpoint windows, in percent of the default. Fields and tooltips grow with it; dropdown lists keep the default size.",

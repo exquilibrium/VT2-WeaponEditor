@@ -38,7 +38,7 @@ return {
 				type = "numeric",
 				tooltip = "font_size_description",
 				default_value = 100,
-				range = { 75, 200 },
+				range = { 50, 300 },
 				decimals_number = 0,
 			},
 		},
