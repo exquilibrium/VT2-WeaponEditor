@@ -31,6 +31,20 @@ end
 local REFRESH_INTERVAL = 5
 local MAX_HIT_LOG = 25
 local COMBO_SETTING_WIDTH = 70 -- hit zone / stagger dropdowns of each combo step
+
+-- The mod options' font size, set each frame in breakpoints.draw. The window's own text
+-- follows set_window_font_scale; fixed pixel widths and tooltips (windows of their own) take
+-- it here.
+local font_scale = 1
+
+local function scaled(width)
+	return math.floor(width * font_scale + 0.5)
+end
+
+local function begin_tool_tip()
+	Imgui.begin_tool_tip()
+	Imgui.set_window_font_scale(font_scale)
+end
 local BETTER_COLOR = { 120, 230, 120, 255 }
 local WORSE_COLOR = { 255, 110, 90, 255 }
 local INFO_COLOR = { 150, 200, 255, 255 }
@@ -1079,7 +1093,7 @@ local function draw_options(options)
 	options.combine_hands = Imgui.checkbox("combine dual-wield hands into one attack##bp_combine_hands", options.combine_hands or false)
 
 	if Imgui.is_item_hovered() then
-		Imgui.begin_tool_tip()
+		begin_tool_tip()
 		Imgui.text("Off: one table per hand. On: one table where each attack hits with both hands -")
 		Imgui.text("hits to kill counts attacks, damage is both hands' together. Pushes keep inner/outer apart.")
 		Imgui.end_tool_tip()
@@ -1107,7 +1121,7 @@ local function draw_options(options)
 		options.bulwark = Imgui.checkbox("bulwark##bp_bulwark", options.bulwark)
 
 		if Imgui.is_item_hovered() then
-			Imgui.begin_tool_tip()
+			begin_tool_tip()
 			Imgui.text(string.format("Enemy debuffed by Bulwark (tank_unbalance_buff): +%g%% to the stagger damage bonus.", prediction.bulwark_bonus() * 100))
 			Imgui.text("Only where the balance mod still applies that buff - TB replaced it with a plain damage taken debuff (use extra damage % there).")
 			Imgui.end_tool_tip()
@@ -1440,7 +1454,7 @@ local function draw_combo(editor, grid, options)
 		-- The step's own hit zone, stagger stacks, crit and (stagger sheet) Opportunist
 		Imgui.text("   ")
 		Imgui.same_line()
-		Imgui.push_item_width(COMBO_SETTING_WIDTH)
+		Imgui.push_item_width(scaled(COMBO_SETTING_WIDTH))
 
 		entry.hit_zone_index = Imgui.combo("##bp_combo_zone" .. i, entry.hit_zone_index, HIT_ZONES)
 
@@ -1550,6 +1564,10 @@ function breakpoints.draw(editor, t)
 	local do_close = Imgui.begin_window("Weapon Editor Breakpoints")
 
 	Imgui.set_window_size(WINDOW_DEFAULT.w, WINDOW_DEFAULT.h, "once")
+
+	font_scale = editor.font_scale()
+
+	Imgui.set_window_font_scale(font_scale)
 
 	local ok, err = pcall(editor.window_guard.after_begin, "breakpoints")
 

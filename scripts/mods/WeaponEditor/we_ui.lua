@@ -23,6 +23,19 @@ local has_note_under = diff.has_note_under
 
 local ui = {}
 
+-- The mod options' font size, set each frame in ui.draw. The window's own text follows
+-- set_window_font_scale; fixed pixel widths and tooltips (windows of their own) take it here.
+local font_scale = 1
+
+local function scaled(width)
+	return math.floor(width * font_scale + 0.5)
+end
+
+local function begin_tool_tip()
+	Imgui.begin_tool_tip()
+	Imgui.set_window_font_scale(font_scale)
+end
+
 local ITEM_WIDTH = 160
 local SEARCH_WIDTH = 280
 -- The results list starts under the search field and is at least this wide (wider with the
@@ -426,7 +439,7 @@ local function draw_note_button(editor, path, where, own_line, compact)
 	end
 
 	if compact and Imgui.is_item_hovered() then
-		Imgui.begin_tool_tip()
+		begin_tool_tip()
 		Imgui.text(note and note.text or "add a note")
 		Imgui.end_tool_tip()
 	end
@@ -733,7 +746,7 @@ local function draw_add_controls(editor, t, keys)
 
 	s.new_fields[path] = form
 
-	Imgui.push_item_width(120)
+	Imgui.push_item_width(scaled(120))
 
 	form.name = Imgui.input_text("##new_name" .. path, form.name)
 
@@ -955,7 +968,7 @@ local function sheet_cell(editor, root, root_keys, relative_keys)
 	local id = "##sheet" .. path
 	local value_type = type(value)
 
-	Imgui.push_item_width(SHEET_CELL_WIDTH)
+	Imgui.push_item_width(scaled(SHEET_CELL_WIDTH))
 
 	if value_type == "number" then
 		draw_number_field(editor, id, value, keys, path)
@@ -1014,7 +1027,7 @@ local function sheet_cell(editor, root, root_keys, relative_keys)
 		Imgui.pop_style_color(1)
 
 		if Imgui.is_item_hovered() then
-			Imgui.begin_tool_tip()
+			begin_tool_tip()
 			Imgui.text(string.format("%s %s | official %s - click to revert to %s", editor.baseline_label(), shown_value(edit.baseline, "(not set)"), shown_value(official_value, "(not set)"), editor.baseline_label()))
 			Imgui.end_tool_tip()
 		end
@@ -1029,7 +1042,7 @@ local function sheet_cell(editor, root, root_keys, relative_keys)
 		text_colored(shown_value(official_value, "(none)"), INFO_COLOR)
 
 		if Imgui.is_item_hovered() then
-			Imgui.begin_tool_tip()
+			begin_tool_tip()
 			Imgui.text("official " .. shown_value(official_value, "(not set)"))
 			Imgui.end_tool_tip()
 		end
@@ -1340,7 +1353,7 @@ draw_profile = function (editor, profile_name, field_keys)
 		Imgui.tree_pop()
 	end
 
-	if Imgui.tree_node("attack sheet##sheet" .. profile_path, true) then
+	if Imgui.tree_node("attack sheet##sheet" .. profile_path) then
 		draw_attack_sheet(editor, profile_name)
 		Imgui.tree_pop()
 	end
@@ -1377,7 +1390,7 @@ local function draw_template_picker(editor)
 	-- Where the search field starts: the results list goes right below it
 	local search_x = Imgui.get_cursor_screen_pos()
 
-	Imgui.push_item_width(SEARCH_WIDTH)
+	Imgui.push_item_width(scaled(SEARCH_WIDTH))
 
 	s.filter = Imgui.input_text("Search weapons / profiles / explosions / spread / dots##template_filter", s.filter or "")
 
@@ -1432,7 +1445,7 @@ local function draw_template_picker(editor)
 	local window_x = Imgui.get_window_pos()
 	local window_width = Imgui.get_window_size()
 	local _, cursor_y = Imgui.get_cursor_screen_pos()
-	local results_width = math.max(MIN_SEARCH_RESULTS_WIDTH, window_x + window_width - search_x - SEARCH_RESULTS_RIGHT_MARGIN)
+	local results_width = math.max(scaled(MIN_SEARCH_RESULTS_WIDTH), window_x + window_width - search_x - SEARCH_RESULTS_RIGHT_MARGIN)
 
 	Imgui.set_cursor_screen_pos(search_x, cursor_y)
 
@@ -1792,7 +1805,7 @@ local function draw_body(editor)
 
 	Imgui.separator()
 
-	Imgui.text(string.format("%d edit(s) | F3: %s", editor.edit_count(), editor.interacting and "editing - press to play" or "playing - press to edit"))
+	Imgui.text(string.format("%d edit(s) | %s: %s", editor.edit_count(), editor.input_key_label(), editor.interacting and "editing - press to play" or "playing - press to edit"))
 	Imgui.same_line()
 
 	editor.ui_state.structure_mode = Imgui.checkbox("structure mode (add/remove fields and entries)##structure_mode", editor.ui_state.structure_mode or false)
@@ -1801,7 +1814,7 @@ local function draw_body(editor)
 
 	editor.ui_state.note_mode = Imgui.checkbox("note mode (notes on unedited fields)##note_mode", editor.ui_state.note_mode or false)
 
-	Imgui.push_item_width(ITEM_WIDTH)
+	Imgui.push_item_width(scaled(ITEM_WIDTH))
 
 	draw_template_picker(editor)
 	Imgui.separator()
@@ -1836,6 +1849,10 @@ function ui.draw(editor)
 	local do_close = Imgui.begin_window("Weapon Editor", "menu_bar")
 
 	Imgui.set_window_size(EDITOR_WINDOW_DEFAULT.w, EDITOR_WINDOW_DEFAULT.h, "once")
+
+	font_scale = editor.font_scale()
+
+	Imgui.set_window_font_scale(font_scale)
 
 	local ok, err = pcall(editor.window_guard.after_begin, "editor")
 

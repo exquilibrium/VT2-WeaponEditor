@@ -29,8 +29,13 @@ local guard = {}
 guard.MARGIN = 10
 
 -- Below this height a window is taken as collapsed (title bar only): its size isn't saved or
--- shrunk, which would also shrink it once expanded
-local COLLAPSED_HEIGHT = 40
+-- shrunk, which would also shrink it once expanded. Two lines of the window's font (the title
+-- bar is one plus padding), so it follows the font size option.
+local function collapsed_height()
+	local font_size = Imgui.get_font_size and Imgui.get_font_size()
+
+	return type(font_size) == "number" and font_size * 2 + 12 or 40
+end
 local SETTING_PREFIX = "window_"
 
 local mod = nil
@@ -280,7 +285,7 @@ function guard.after_begin(name)
 	end
 
 	local low_x, high_x, low_y, high_y = limits()
-	local collapsed = h < COLLAPSED_HEIGHT
+	local collapsed = h < collapsed_height()
 	local fitted_x, fitted_w = fit_axis(x, w, s.w, low_x, high_x)
 	local fitted_y, fitted_h = fit_axis(y, h, collapsed and h or s.h, low_y, high_y)
 

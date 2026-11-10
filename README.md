@@ -105,9 +105,10 @@ named `mb_...` and its profile blocks are `NewDamageProfileTemplates.mb_x`.
 | `/we_revert_all` | Revert every edit to what the balance mod's files load |
 | `/we_reset_windows` | Move both windows back to their default place and size |
 
-**F3** switches between using the windows and playing. Using the windows shows the cursor and
-blocks game input the way open chat does (no movement, attacks or other mods' keybinds; the
-Esc menu and popups still work).
+**F3** switches between using the windows and playing (rebind it under **Mod Options → Weapon
+Editor → Switch between editor and game**; the window's status line and the chat hint show the
+current key). Using the windows shows the cursor and blocks game input the way open chat does
+(no movement, attacks or other mods' keybinds; the Esc menu and popups still work).
 Chat can't be opened while the windows have input, so press F3 before typing a command.
 
 The editor only opens in **borderless fullscreen** (Screen Mode in the game's options); in
@@ -124,6 +125,10 @@ so avoid opening a dropdown right at the game window's bottom edge.
 
 **F2** opens and closes the editor window like `/we` (rebind it under **Mod Options → Weapon Editor → Open/close the editor**;
 it works with menus open too).
+
+**Font size (%)** under **Mod Options → Weapon Editor** (75-200, default 100) sets the text size
+of both windows, live. Fields, the attack sheet's cells and tooltips grow with it; dropdown
+lists keep the default size.
 
 ## Finding things
 
@@ -176,7 +181,7 @@ it works with menus open too).
 
 ### Attack sheet
 
-Opening a damage profile shows the **attack sheet** first: top-level fields
+A damage profile's first node is the **attack sheet** (folded until you open it): top-level fields
 (`charge_value`, `melee_boost_override`, `shield_break`, ...), cleave, then one column per
 target plus `default_target`. Rows cover power attack/impact, attack template, boost curve and
 coefficients, headshot boost, armor modifiers per armor type (infantry, armored, monster,

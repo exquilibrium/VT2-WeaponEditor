@@ -15,7 +15,7 @@ local mod = get_mod("WeaponEditor")
 	exports. See README.md.
 
 	Flow:
-		/we                   open/close the editor window (F3 switches between using it and playing)
+		/we                   open/close the editor window (a keybind, F3 by default, switches between using it and playing)
 		edit values          action and damage profile edits apply to the next swing/hit. Template
 		                     buffs (dodge, movement) and ammo_data need "re-equip" (or /we_reequip),
 		                     which the window flags when needed. Damage profiles
@@ -1904,7 +1904,7 @@ local function open_window()
 	editor.window_open = true
 
 	set_interacting(true)
-	report("F3 switches between using the editor and playing.")
+	report("%s switches between using the editor and playing.", editor.input_key_label())
 end
 
 local function close_window()
@@ -1922,6 +1922,39 @@ end
 
 function editor.close()
 	close_window()
+end
+
+-- The mod options' "Switch between editor and game" keybind (F3 by default)
+function mod.toggle_input()
+	if editor.window_open then
+		set_interacting(not editor.interacting)
+	end
+end
+
+-- That keybind as text, e.g. "F3" or "Ctrl+F3" (VMF stores the key first, then its modifiers)
+function editor.input_key_label()
+	local keys = mod:get("toggle_input_keybind")
+
+	if type(keys) ~= "table" or not keys[1] then
+		return "(unbound)"
+	end
+
+	local parts = {}
+
+	for i = 2, #keys do
+		parts[#parts + 1] = tostring(keys[i]):gsub("^%l", string.upper)
+	end
+
+	parts[#parts + 1] = tostring(keys[1]):gsub("^%l", string.upper)
+
+	return table.concat(parts, "+")
+end
+
+-- The mod options' font size (percent) as Imgui's window font scale
+function editor.font_scale()
+	local percent = tonumber(mod:get("font_size")) or 100
+
+	return math.max(0.5, math.min(3, percent / 100))
 end
 
 --[[
@@ -2227,10 +2260,6 @@ function mod.update()
 
 	if not editor.window_open then
 		return
-	end
-
-	if Keyboard.pressed(Keyboard.button_index("f3")) then
-		set_interacting(not editor.interacting)
 	end
 
 	window_guard.update_bounds()
