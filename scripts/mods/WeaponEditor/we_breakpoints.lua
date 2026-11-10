@@ -1536,24 +1536,26 @@ local function draw_body(editor, t)
 	end
 end
 
+-- Where the window opens without a saved place, relative to the game window's corner: offset
+-- from the editor window so both stay grabbable
+local WINDOW_DEFAULT = { x = 90, y = 90, w = 820, h = 700 }
+
 -- Returns true when the window should close. The body runs in a pcall so end_window is
 -- always reached - an error between begin/end would leave Imgui's window stack broken.
 function breakpoints.draw(editor, t)
-	-- /we_reset_windows: offset from the editor window so both stay grabbable
-	if editor.pending_window_reset.breakpoints then
-		editor.pending_window_reset.breakpoints = nil
-
-		local origin_x, origin_y = editor.game_window_origin()
-
-		Imgui.set_next_window_pos(origin_x + 90, origin_y + 90)
-		Imgui.set_next_window_size(820, 700)
-	end
+	-- Kept inside the game window (see we_window_guard.lua); also places it on opening and
+	-- after /we_reset_windows
+	editor.window_guard.before_begin("breakpoints", WINDOW_DEFAULT)
 
 	local do_close = Imgui.begin_window("Weapon Editor Breakpoints")
 
-	Imgui.set_window_size(820, 700, "once")
+	Imgui.set_window_size(WINDOW_DEFAULT.w, WINDOW_DEFAULT.h, "once")
 
-	local ok, err = pcall(draw_body, editor, t)
+	local ok, err = pcall(editor.window_guard.after_begin, "breakpoints")
+
+	if ok then
+		ok, err = pcall(draw_body, editor, t)
+	end
 
 	Imgui.end_window()
 

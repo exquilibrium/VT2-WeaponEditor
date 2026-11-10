@@ -103,12 +103,24 @@ named `mb_...` and its profile blocks are `NewDamageProfileTemplates.mb_x`.
 | `/we_export_notes` | Copy a patch-note draft (edits and their notes, as markdown) to the clipboard |
 | `/we_status` | List pending edits and notes, and what happened to last session's at launch |
 | `/we_revert_all` | Revert every edit to what the balance mod's files load |
-| `/we_reset_windows` | Move both windows back on screen (they vanish if dragged outside the game window) |
+| `/we_reset_windows` | Move both windows back to their default place and size |
 
 **F3** switches between using the windows and playing. Using the windows shows the cursor and
 blocks game input the way open chat does (no movement, attacks or other mods' keybinds; the
 Esc menu and popups still work).
 Chat can't be opened while the windows have input, so press F3 before typing a command.
+
+The editor only opens in **borderless fullscreen** (Screen Mode in the game's options); in
+fullscreen or windowed mode, chat says so instead. Switching the options to another screen mode
+while it's open closes it first (chat says why) and applies the change a frame later, once its
+windows are gone. Both rules guard against the same engine bug as below.
+
+Both windows stay inside the game window, 10 px clear of its edges: dragging stops at the
+margin and resizing stops at the edge. The game's Imgui turns a window that leaves the game
+window, or only touches its edge, into an OS window of its own, which breaks the game window
+(an engine bug). Each window opens where you last left it (saved with the mod settings), fitted
+to the game window, rather than where `imgui.ini` has it. Dropdowns and tooltips aren't kept in,
+so avoid opening a dropdown right at the game window's bottom edge.
 
 **F2** opens and closes the editor window like `/we` (rebind it under **Mod Options → Weapon Editor → Open/close the editor**;
 it works with menus open too).

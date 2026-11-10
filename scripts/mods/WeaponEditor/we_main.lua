@@ -63,6 +63,9 @@ local core = require("scripts/mods/WeaponEditor/we_core")
 local export = require("scripts/mods/WeaponEditor/we_export")
 local ui = require("scripts/mods/WeaponEditor/we_ui")
 local breakpoints = require("scripts/mods/WeaponEditor/we_breakpoints")
+local window_guard = require("scripts/mods/WeaponEditor/we_window_guard")
+
+window_guard.init(mod)
 
 -- Globals the editor can edit and export. Projectiles is deliberately absent: weapon templates
 -- are built with table.clone, so every action fires its own embedded copy of its
@@ -254,8 +257,8 @@ editor = {
 	breakpoint_show_combo = false, -- the breakpoint window shows the combo instead of the attack
 	-- template name -> true when an edited field only takes effect after a re-equip
 	reequip_needed = {},
-	-- window name ("editor"/"breakpoints") -> true: move it back on screen the next time it's drawn
-	pending_window_reset = {},
+	-- Keeps both windows inside the game window (we_window_guard.lua)
+	window_guard = window_guard,
 }
 
 -- The breakpoint and prediction modules predict damage outside of any window draw (hit log), so
@@ -1867,8 +1870,24 @@ local function set_interacting(interacting)
 	editor.interacting = interacting
 end
 
+-- The screen mode the game uses, the way it reads it (fullscreen wins over borderless)
+local function screen_mode(fullscreen, borderless_fullscreen)
+	return fullscreen and "fullscreen" or borderless_fullscreen and "borderless_fullscreen" or "windowed"
+end
+
+local function current_screen_mode()
+	return screen_mode(Application.user_setting("fullscreen"), Application.user_setting("borderless_fullscreen"))
+end
+
 local function open_window()
 	if editor.window_open then
+		return
+	end
+
+	-- See "Screen mode guard" below
+	if current_screen_mode() ~= "borderless_fullscreen" then
+		report("Weapon Editor can only be opened in borderless fullscreen - set Screen Mode to Borderless Fullscreen in the options.")
+
 		return
 	end
 
@@ -1896,12 +1915,92 @@ local function close_window()
 	set_interacting(false)
 	Imgui.close_imgui()
 	flush_saved_edits()
+	window_guard.on_closed()
 
 	editor.window_open = false
 end
 
 function editor.close()
 	close_window()
+end
+
+--[[
+	Screen mode guard. The game's Imgui breaks the game window when one of its windows leaves
+	the game window (see we_window_guard.lua), and outside borderless fullscreen a display
+	change resizes or re-creates the game window under the open Imgui windows. So the editor
+	only opens in borderless fullscreen, and closes before the options switch to another
+	screen mode:
+	  - OptionsView.handle_apply_changes (the options' Apply): the editor closes and the apply
+	    is held back one frame, so the game window changes with Imgui already gone.
+	  - Application.apply_user_settings, which makes the change: a fallback for any other
+	    path, closing the editor in the same frame.
+	Not covered: changes the engine makes without Lua (an Alt+Enter toggle, if the engine has
+	one).
+]]
+
+-- { func, view }: an options Apply held back one frame after closing the editor
+local deferred_apply = nil
+
+local function close_for_screen_mode()
+	if not editor.window_open then
+		return
+	end
+
+	close_window()
+	report("Weapon Editor closed: borderless fullscreen was turned off.")
+end
+
+mod:hook("OptionsView", "handle_apply_changes", function (func, self, ...)
+	-- A click in the held-back frame: the first Apply is still to come
+	if deferred_apply then
+		return
+	end
+
+	local changed = self.changed_user_settings or {}
+	local fullscreen = changed.fullscreen
+	local borderless_fullscreen = changed.borderless_fullscreen
+
+	if fullscreen == nil then
+		fullscreen = Application.user_setting("fullscreen")
+	end
+
+	if borderless_fullscreen == nil then
+		borderless_fullscreen = Application.user_setting("borderless_fullscreen")
+	end
+
+	if editor.window_open and screen_mode(fullscreen, borderless_fullscreen) ~= "borderless_fullscreen" then
+		close_for_screen_mode()
+
+		deferred_apply = {
+			func = func,
+			view = self,
+		}
+
+		return
+	end
+
+	return func(self, ...)
+end)
+
+mod:hook(Application, "apply_user_settings", function (func, ...)
+	if editor.window_open and current_screen_mode() ~= "borderless_fullscreen" then
+		close_for_screen_mode()
+	end
+
+	return func(...)
+end)
+
+-- From mod.update, the frame after the editor closed
+local function run_deferred_apply()
+	local deferred = deferred_apply
+
+	deferred_apply = nil
+
+	local ok, err = pcall(deferred.func, deferred.view)
+
+	if not ok then
+		report("Applying the display settings failed: %s", tostring(err))
+	end
 end
 
 -- First attack (sorted by name, action_one first) of the selected template that has a damage profile
@@ -2116,6 +2215,11 @@ function mod.update()
 		run_startup()
 	end
 
+	-- An options Apply held back while the editor closed (screen mode guard)
+	if deferred_apply then
+		run_deferred_apply()
+	end
+
 	-- Before the window check: commands like /we_revert_all change edits with it closed
 	if edits_dirty_since and main_time() - edits_dirty_since >= SAVE_DELAY then
 		flush_saved_edits()
@@ -2128,6 +2232,8 @@ function mod.update()
 	if Keyboard.pressed(Keyboard.button_index("f3")) then
 		set_interacting(not editor.interacting)
 	end
+
+	window_guard.update_bounds()
 
 	local ok, do_close = pcall(ui.draw, editor)
 
@@ -2186,27 +2292,11 @@ mod:command("we_reequip", "Weapon editor: respawn the wielded weapon so wield/sp
 	editor.reequip_wielded()
 end)
 
--- The game window's top-left in Imgui coordinates, for /we_reset_windows. The game's Imgui has
--- external viewports: window positions are desktop coordinates, and a window placed outside
--- the game window becomes its own OS window - which a windowed game's offset from the desktop
--- corner causes for any fixed position. The main menu bar always sits at the game window's
--- top-left, so one frame of it (an empty bar, drawn only on the reset frame) gives the origin.
--- A window that ends up wholly inside the game window is merged back into it by Imgui.
-function editor.game_window_origin()
-	if Imgui.begin_main_menu_bar() then
-		local x, y = Imgui.get_window_pos()
-
-		Imgui.end_main_menu_bar()
-
-		return x or 0, y or 0
-	end
-
-	return 0, 0
-end
-
+-- Places both windows at their defaults, relative to the game window (a window that ends up
+-- wholly inside it is merged back into it by Imgui)
 mod:command("we_reset_windows", "Weapon editor: move the editor and breakpoint windows back on screen (default position and size).", function ()
-	editor.pending_window_reset.editor = true
-	editor.pending_window_reset.breakpoints = true
+	window_guard.reset("editor")
+	window_guard.reset("breakpoints")
 
 	open_window()
 end)

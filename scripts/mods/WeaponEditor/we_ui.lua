@@ -1823,24 +1823,25 @@ local function draw_body(editor)
 	Imgui.pop_item_width()
 end
 
+-- Where the window opens without a saved place, relative to the game window's corner
+local EDITOR_WINDOW_DEFAULT = { x = 30, y = 30, w = 760, h = 860 }
+
 -- Returns true when the window should close. The body runs in a pcall so end_window is
 -- always reached - an error between begin/end would leave Imgui's window stack broken.
 function ui.draw(editor)
-	-- /we_reset_windows: windows dragged outside the game window can't be grabbed back
-	if editor.pending_window_reset.editor then
-		editor.pending_window_reset.editor = nil
-
-		local origin_x, origin_y = editor.game_window_origin()
-
-		Imgui.set_next_window_pos(origin_x + 30, origin_y + 30)
-		Imgui.set_next_window_size(760, 860)
-	end
+	-- Kept inside the game window (see we_window_guard.lua); also places it on opening and
+	-- after /we_reset_windows
+	editor.window_guard.before_begin("editor", EDITOR_WINDOW_DEFAULT)
 
 	local do_close = Imgui.begin_window("Weapon Editor", "menu_bar")
 
-	Imgui.set_window_size(760, 860, "once")
+	Imgui.set_window_size(EDITOR_WINDOW_DEFAULT.w, EDITOR_WINDOW_DEFAULT.h, "once")
 
-	local ok, err = pcall(draw_body, editor)
+	local ok, err = pcall(editor.window_guard.after_begin, "editor")
+
+	if ok then
+		ok, err = pcall(draw_body, editor)
+	end
 
 	Imgui.end_window()
 
